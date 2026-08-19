@@ -1,6 +1,6 @@
 --[[ Sender ("computer A"): watches an input buffer and orders work from
 services. Copy to config.lua next to main.lua on the sender computer and
-edit the device names — run tools/devices.lua to list what's attached. ]]
+edit the device names -- run tools/devices.lua to list what's attached. ]]
 
 return {
   role = "sender",

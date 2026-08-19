@@ -1,4 +1,4 @@
---[[ Crushing service ("computer B"). The `service` role is generic — this
+--[[ Crushing service ("computer B"). The `service` role is generic -- this
 config is what makes it a crusher. An enrichment or infusing service later
 is this same file with a new name, its own frequencies, and its recipes.
 Copy to config.lua next to main.lua on the service computer. ]]

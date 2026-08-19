@@ -1,4 +1,4 @@
---[[ lib/class.lua — minimal single-inheritance class helper.
+--[[ lib/class.lua -- minimal single-inheritance class helper.
 
   local MyClass = class()
   function MyClass:init(a, b) ... end

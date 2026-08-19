@@ -1,4 +1,4 @@
---[[ roles/service.lua — "computer B", a generic processing service.
+--[[ roles/service.lua -- "computer B", a generic processing service.
 
 The crushing service is just this role with crushing recipes in its config;
 an enriching or smelting service is the same code with different recipes and

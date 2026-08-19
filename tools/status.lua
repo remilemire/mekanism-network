@@ -1,4 +1,4 @@
---[[ tools/status.lua — ping every mekanet node and print its sys.status.
+--[[ tools/status.lua -- ping every mekanet node and print its sys.status.
 Run from any computer on the network with a modem:  tools/status.lua ]]
 
 local here = fs.getDir(shell.getRunningProgram())
@@ -17,7 +17,7 @@ tasks[#tasks + 1] = function()
   print("mekanet nodes on protocol '" .. node.protocol .. "':")
   local ids = { rednet.lookup(node.protocol) }
   if #ids == 0 then
-    print("  (none found — are the other computers running main.lua?)")
+    print("  (none found -- are the other computers running main.lua?)")
     return
   end
   table.sort(ids)

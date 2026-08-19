@@ -1,4 +1,4 @@
---[[ lib/clients/entangloporter.lua — client for Mekanism's quantum
+--[[ lib/clients/entangloporter.lua -- client for Mekanism's quantum
 entangloporter peripheral. Frequencies are how items teleport between sites,
 so ensure_frequency() is the workhorse: idempotent, creates on demand, and
 verifies the switch actually took. ]]

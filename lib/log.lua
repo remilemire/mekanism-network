@@ -1,4 +1,4 @@
---[[ lib/log.lua — leveled logger: colored terminal output + rotating file.
+--[[ lib/log.lua -- leveled logger: colored terminal output + rotating file.
 
   local log = Log.new("router", { level = "debug" })
   log:info("claim %s created", id)

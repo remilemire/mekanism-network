@@ -1,4 +1,4 @@
---[[ main.lua — mekanet entrypoint.
+--[[ main.lua -- mekanet entrypoint.
 
 Every computer runs this on startup. It reads config.lua (which must sit
 next to this file and return a table with at least a `role`), builds the
@@ -37,7 +37,7 @@ if not ok or type(config) ~= "table" then
   return
 end
 if not ROLE_MODULES[config.role] then
-  printError(("unknown role %q — expected one of: sender, service, router")
+  printError(("unknown role %q -- expected one of: sender, service, router")
     :format(tostring(config.role)))
   return
 end
@@ -51,7 +51,7 @@ while true do
     local role = Role.new(config, log)
     role:setup()
     local tasks = role:tasks()
-    log:info("running %s '%s' with %d tasks — hold Ctrl+T to stop",
+    log:info("running %s '%s' with %d tasks -- hold Ctrl+T to stop",
       config.role, config.name or "?", #tasks)
     parallel.waitForAll(table.unpack(tasks))
   end)

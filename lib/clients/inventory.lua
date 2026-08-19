@@ -1,4 +1,4 @@
---[[ lib/clients/inventory.lua — client for CC's generic inventory peripheral
+--[[ lib/clients/inventory.lua -- client for CC's generic inventory peripheral
 (chests, barrels, and most modded inventories on a wired network). ]]
 
 local class = require("lib.class")

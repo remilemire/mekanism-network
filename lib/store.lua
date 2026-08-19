@@ -1,4 +1,4 @@
---[[ lib/store.lua — JsonStore: one JSON file per record in a directory.
+--[[ lib/store.lua -- JsonStore: one JSON file per record in a directory.
 
 Writes go through a .tmp file and an fs.move so a reboot mid-write leaves
 either the old record or the new one, never a half-written file.

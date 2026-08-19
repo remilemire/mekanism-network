@@ -1,4 +1,4 @@
---[[ lib/net.lua — rednet RPC node.
+--[[ lib/net.lua -- rednet RPC node.
 
 One Node per computer. Design goals:
 
@@ -66,7 +66,7 @@ function Node:open()
     modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
         or peripheral.find("modem")
     if not modem then
-      error("no modem attached — this computer needs a (preferably wireless) modem", 0)
+      error("no modem attached -- this computer needs a (preferably wireless) modem", 0)
     end
   end
 
@@ -160,7 +160,7 @@ function Node:_net_loop()
           -- The response was lost in transit; replay the cached one.
           rednet.send(from, seen.res, self.protocol)
         end
-        -- status "pending": duplicate while the handler runs — drop it, the
+        -- status "pending": duplicate while the handler runs -- drop it, the
         -- client keeps retrying and will hit the cache once we finish.
       elseif msg.kind == "res" then
         self.responses[msg.id] = msg

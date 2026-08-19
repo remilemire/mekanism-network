@@ -1,4 +1,4 @@
---[[ lib/util.lua — small shared helpers. ]]
+--[[ lib/util.lua -- small shared helpers. ]]
 
 local util = {}
 

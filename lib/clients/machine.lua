@@ -1,5 +1,5 @@
---[[ lib/clients/machine.lua — thin client for a Mekanism machine (crusher,
-enrichment chamber, factory, …). The network moves items around the machine
+--[[ lib/clients/machine.lua -- thin client for a Mekanism machine (crusher,
+enrichment chamber, factory, ...). The network moves items around the machine
 rather than through its API, so this client is for observability: energy and
 activity readouts in sys.status / heartbeat logs. Every accessor is
 pcall-guarded because method names vary a little between Mekanism versions. ]]

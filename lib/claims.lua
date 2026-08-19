@@ -1,23 +1,23 @@
---[[ lib/claims.lua — claim model, state machine, and persistent ledger.
+--[[ lib/claims.lua -- claim model, state machine, and persistent ledger.
 
 A claim is the router's promise to deliver processed goods back to a sender:
 
   {
-    id = "…",                  -- equals the original request id (idempotency!)
+    id = "...",                  -- equals the original request id (idempotency!)
     sender_id = 12,            -- computer id to deliver to
     service = "crusher-1",
     input_item = "minecraft:iron_ingot", input_amount = 72,
     item = "mekanism:dust_iron", amount = 72, ratio = 1,
-    status = "created", created_at = …, updated_at = …,
-    history = { {status="created", at=…}, … },
+    status = "created", created_at = ..., updated_at = ...,
+    history = { {status="created", at=...}, ... },
     port = 3, dispatched = 72, received = 72,  -- filled in as delivery happens
   }
 
 Lifecycle:
-  created ──> in_transit ──> arrived ──> delivering ──> completed
-     │             │            │            │
-     ├─> expired   ├─> expired  └─> failed   └─> failed
-     └─> failed    └─> failed
+  created --> in_transit --> arrived --> delivering --> completed
+     |             |            |            |
+     |-> expired   |-> expired  `-> failed   `-> failed
+     `-> failed    `-> failed
   (created may also jump straight to arrived: if the sender's "shipped"
   notice is lost, the router still promotes the claim when goods show up.)
 ]]
@@ -86,7 +86,7 @@ function claims.transition(claim, to)
   claim.history[#claim.history + 1] = { status = to, at = claim.updated_at }
 end
 
---- ClaimLedger — in-memory index over a JsonStore, one JSON file per claim,
+--- ClaimLedger -- in-memory index over a JsonStore, one JSON file per claim,
 --- with an archive directory for finished claims.
 local ClaimLedger = class()
 

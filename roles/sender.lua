@@ -1,4 +1,4 @@
---[[ roles/sender.lua — "computer A".
+--[[ roles/sender.lua -- "computer A".
 
 Watches an input buffer for items that have a configured route, orders
 processing from the matching service, ships the raw goods through its outbox
@@ -7,8 +7,8 @@ the router calls with a delivery offer.
 
 Local state:
   * a persistent ledger (one JSON per order) so reboots don't lose track
-  * self.active[input_item] = claim id — one outstanding order per item type
-  * self.pending — the single delivery currently being received (the sender
+  * self.active[input_item] = claim id -- one outstanding order per item type
+  * self.pending -- the single delivery currently being received (the sender
     has one inbox porter, so deliveries are serialized; concurrent offers
     get a structured "busy" error and the router retries later)
 ]]
@@ -177,7 +177,7 @@ function Sender:_on_offer(body)
     entry.updated_at = util.now_ms()
     self.ledger:put(body.claim_id, entry)
   else
-    self.log:warn("offer for claim %s we have no record of — accepting (router is the source of truth)",
+    self.log:warn("offer for claim %s we have no record of -- accepting (router is the source of truth)",
       util.short_id(body.claim_id))
   end
 
@@ -195,7 +195,7 @@ function Sender:_on_dispatched(body)
     -- We lost the offer state (rebooted between offer and dispatch).
     -- Rebuild what we can; the receive timeout accepts a partial count if
     -- the baseline guess turns out to be off.
-    self.log:warn("dispatch for claim %s without a matching offer — rebuilding state",
+    self.log:warn("dispatch for claim %s without a matching offer -- rebuilding state",
       util.short_id(body.claim_id))
     self.pending = {
       claim_id = body.claim_id,
@@ -248,7 +248,7 @@ function Sender:_receipt_tick()
   else
     if waited > 2 * timeout_ms and util.now_ms() - (p.last_nag or 0) > 30000 then
       p.last_nag = util.now_ms()
-      self.log:warn("claim %s: still waiting on delivery (%d/%d after %s) — check the pipes",
+      self.log:warn("claim %s: still waiting on delivery (%d/%d after %s) -- check the pipes",
         util.short_id(p.claim_id), arrived, p.amount, util.fmt_age(waited))
     end
     sleep(1)
@@ -312,7 +312,7 @@ function Sender:_janitor_tick()
       if ok and body.claim then
         local s = body.claim.status
         if s == "failed" or s == "expired" then
-          self.log:warn("claim %s (%s) ended as %s at the router — freeing the order slot",
+          self.log:warn("claim %s (%s) ended as %s at the router -- freeing the order slot",
             util.short_id(id), item, s)
           if entry then
             entry.status = "failed"

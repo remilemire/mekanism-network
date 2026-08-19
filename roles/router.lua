@@ -1,18 +1,18 @@
---[[ roles/router.lua — "computer C", the claim broker and delivery hub.
+--[[ roles/router.lua -- "computer C", the claim broker and delivery hub.
 
 Owns the claim ledger (persisted as one JSON per claim, so a reboot resumes
 exactly where it left off) and the bank of delivery ports: N chests that
 each drain into their own entangloporter on a fixed frequency.
 
 Loops:
-  * rpc server     — claim.create / claim.shipped / claim.abort /
+  * rpc server     -- claim.create / claim.shipped / claim.abort /
                      delivery.received / claim.get / claim.list / sys.status
-  * intake watcher — matches goods arriving in the intake buffer against
+  * intake watcher -- matches goods arriving in the intake buffer against
                      open claims (FIFO, with reservations so two claims for
                      the same item can't both count the same dust)
-  * delivery loop  — offers arrived claims to their sender, locks a port,
+  * delivery loop  -- offers arrived claims to their sender, locks a port,
                      moves the goods, and notifies the sender
-  * janitor        — expires stale claims, nags about stuck deliveries,
+  * janitor        -- expires stale claims, nags about stuck deliveries,
                      archives finished ones, re-asserts port frequencies
 ]]
 
@@ -106,7 +106,7 @@ function Router:_on_claim_create(body)
   end
 
   self.ledger:save(claim)
-  self.log:info("claim %s: created — expecting %d x %s for #%d (via %s)",
+  self.log:info("claim %s: created -- expecting %d x %s for #%d (via %s)",
     util.short_id(claim.id), claim.amount, claim.item, claim.sender_id,
     tostring(claim.service))
   return { claim = claim }
@@ -150,7 +150,7 @@ function Router:_on_delivery_received(body)
   c.received = math.floor(tonumber(body.received) or c.amount)
   self.ledger:transition(c, claims.STATUS.COMPLETED)
   if c.port then self.port_locks[c.port] = nil end
-  self.log:info("claim %s: completed — #%d confirmed %d x %s (port %s freed)",
+  self.log:info("claim %s: completed -- #%d confirmed %d x %s (port %s freed)",
     util.short_id(c.id), c.sender_id, c.received, c.item, tostring(c.port))
   return { claim = c }
 end
@@ -257,7 +257,7 @@ function Router:_deliver(c, port_i)
   c.dispatched = moved
   self.ledger:save(c)
   if moved < c.amount then
-    self.log:warn("claim %s: only %d/%d x %s made it to port %d — intake shortfall",
+    self.log:warn("claim %s: only %d/%d x %s made it to port %d -- intake shortfall",
       util.short_id(c.id), moved, c.amount, c.item, port_i)
   end
 
@@ -286,7 +286,7 @@ function Router:_janitor_tick()
   for _, c in ipairs(self.ledger:by_status(claims.STATUS.CREATED, claims.STATUS.IN_TRANSIT)) do
     if now - c.updated_at > ttl_ms then
       self.ledger:transition(c, claims.STATUS.EXPIRED)
-      self.log:warn("claim %s: expired after %s in %s — goods may be sitting in intake unclaimed",
+      self.log:warn("claim %s: expired after %s in %s -- goods may be sitting in intake unclaimed",
         util.short_id(c.id), util.fmt_age(now - c.created_at), c.status)
     end
   end
@@ -298,7 +298,7 @@ function Router:_janitor_tick()
       -- Deliberately keep the port locked: freeing it would let a new claim
       -- mix its items into an unconfirmed delivery. A human (or the sender's
       -- confirm-retry janitor) resolves this.
-      self.log:warn("claim %s: delivery unconfirmed for %s on port %s — sender #%d asleep?",
+      self.log:warn("claim %s: delivery unconfirmed for %s on port %s -- sender #%d asleep?",
         util.short_id(c.id), util.fmt_age(now - c.updated_at), tostring(c.port), c.sender_id)
     end
   end

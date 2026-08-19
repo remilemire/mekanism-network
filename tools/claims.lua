@@ -1,4 +1,4 @@
---[[ tools/claims.lua — list claims from the router's ledger.
+--[[ tools/claims.lua -- list claims from the router's ledger.
 
   tools/claims.lua                  -- newest 50 claims, any status
   tools/claims.lua in_transit       -- filter by status

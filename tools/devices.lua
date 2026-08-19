@@ -1,4 +1,4 @@
---[[ tools/devices.lua — list attached peripherals and their types.
+--[[ tools/devices.lua -- list attached peripherals and their types.
 Use these exact names in config.lua. ]]
 
 local names = peripheral.getNames()
