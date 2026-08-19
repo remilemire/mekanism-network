@@ -117,7 +117,6 @@ mekanet aims for *at-least-once messaging + idempotent handlers + reconciliation
 
 ```
 main.lua                     entrypoint: reads config.lua, supervises the role
-startup.lua                  boot shim for the computer root
 lib/
   class.lua  util.lua  log.lua  store.lua   shared kit (OOP, ids, logging, JSON persistence)
   net.lua                    rednet RPC node (retries, dedup, replay, worker loop)
@@ -149,7 +148,8 @@ plus a **wired modem network** reaching its chests and porters):
 3. Copy the matching example (`examples/config.sender.lua`,
    `config.crusher.lua`, or `config.router.lua`) to **`config.lua` next to
    `main.lua`**, and fill in the device names.
-4. Make sure `startup.lua` is at the computer root, then reboot.
+4. Hook up your own `startup.lua` at the computer root to run `main.lua`
+   (e.g. `shell.run("/mekanet/main.lua")`), then reboot.
 
 Boot order doesn't matter — every node retries and re-resolves hostnames —
 but starting the router first makes the first minute quieter.
