@@ -10,6 +10,9 @@ return {
   devices = {
     intake_porter = "quantumEntangloporter_0", -- entangloporter C-in
     intake_inventory = "minecraft:barrel_0",   -- big buffer fed by C-in
+    -- ...or several inventories treated as one combined buffer:
+    -- intake_inventory = { "minecraft:barrel_0", "minecraft:barrel_9",
+    --                      "minecraft:barrel_10", "minecraft:barrel_11" },
   },
   intake_frequency = "mekanet.intake", -- every service's output_frequency points here
 

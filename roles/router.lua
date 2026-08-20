@@ -21,6 +21,7 @@ local util = require("lib.util")
 local Node = require("lib.net")
 local claims = require("lib.claims")
 local InventoryClient = require("lib.clients.inventory")
+local MultiInventoryClient = require("lib.clients.multi_inventory")
 local EntangloporterClient = require("lib.clients.entangloporter")
 
 local Router = class()
@@ -44,7 +45,10 @@ end
 
 function Router:setup()
   local d = self.config.devices
-  self.intake_inventory = InventoryClient.new(d.intake_inventory)
+  -- intake_inventory may be one peripheral name or a list treated as a
+  -- single combined buffer (counts sum; deliveries drain across all of them).
+  self.intake_inventory = MultiInventoryClient.wrap(d.intake_inventory)
+  self.log:info("intake buffer: %s", self.intake_inventory:get_name())
   self.intake_porter = EntangloporterClient.new(d.intake_porter)
   self.intake_porter:ensure_frequency(self.config.intake_frequency)
 

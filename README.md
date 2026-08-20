@@ -123,6 +123,7 @@ lib/
   claims.lua                 claim model + state machine + persistent ledger
   clients/
     inventory.lua            generic inventory client (list/count/push_item)
+    multi_inventory.lua      several inventories presented as one buffer
     entangloporter.lua       quantum entangloporter client (ensure_frequency)
     machine.lua              optional Mekanism machine readouts
 roles/
@@ -167,6 +168,9 @@ No router changes needed — claims are service-agnostic.
 
 ## Operating notes
 
+- The router's `intake_inventory` may be a single peripheral name or a list
+  of names treated as one combined buffer (counts sum across all of them,
+  and deliveries drain them in the listed order).
 - `tools/status.lua` — live view of every node: buffers, ports, claim counts.
 - `tools/claims.lua [status] [router-host]` — inspect the ledger.
 - Logs go to the terminal and `/data/logs/<name>.log` (rotating).
