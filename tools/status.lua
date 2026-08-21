@@ -14,22 +14,25 @@ node:open()
 
 local tasks = node:tasks()
 tasks[#tasks + 1] = function()
-  print("mekanet nodes on protocol '" .. node.protocol .. "':")
+  -- Collect everything first, then page it: a router status alone can be
+  -- several screens on a CC terminal.
+  local out = { "mekanet nodes on protocol '" .. node.protocol .. "':" }
   local ids = { rednet.lookup(node.protocol) }
   if #ids == 0 then
-    print("  (none found -- are the other computers running main.lua?)")
-    return
-  end
-  table.sort(ids)
-  for _, id in ipairs(ids) do
-    local ok, body = node:request(id, "sys.status", {}, { retries = 1, timeout_s = 2 })
-    if ok then
-      print(("== #%d  %s (%s)"):format(id, body.name or "?", body.role or "?"))
-      print(textutils.serialize(body))
-    else
-      print(("== #%d  (no response)"):format(id))
+    out[#out + 1] = "  (none found -- are the other computers running main.lua?)"
+  else
+    table.sort(ids)
+    for _, id in ipairs(ids) do
+      local ok, body = node:request(id, "sys.status", {}, { retries = 1, timeout_s = 2 })
+      if ok then
+        out[#out + 1] = ("== #%d  %s (%s)"):format(id, body.name or "?", body.role or "?")
+        out[#out + 1] = textutils.serialize(body)
+      else
+        out[#out + 1] = ("== #%d  (no response)"):format(id)
+      end
     end
   end
+  textutils.pagedPrint(table.concat(out, "\n"))
 end
 
 -- waitForAny: exits as soon as the query task above returns.

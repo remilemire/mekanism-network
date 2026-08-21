@@ -33,13 +33,16 @@ tasks[#tasks + 1] = function()
     print("no claims" .. (status_filter and (" with status " .. status_filter) or ""))
     return
   end
-  print(("%-10s %-11s %6s %-28s %-6s %s")
-    :format("id", "status", "amount", "item", "sender", "age"))
+  local out = {
+    ("%-10s %-11s %6s %-28s %-6s %s")
+      :format("id", "status", "amount", "item", "sender", "age"),
+  }
   for _, c in ipairs(body.claims) do
-    print(("%-10s %-11s %6d %-28s #%-5d %s"):format(
+    out[#out + 1] = ("%-10s %-11s %6d %-28s #%-5d %s"):format(
       util.short_id(c.id), c.status, c.amount, c.item, c.sender_id,
-      util.fmt_age((body.now or util.now_ms()) - c.created_at)))
+      util.fmt_age((body.now or util.now_ms()) - c.created_at))
   end
+  textutils.pagedPrint(table.concat(out, "\n"))
 end
 
 parallel.waitForAny(table.unpack(tasks))
