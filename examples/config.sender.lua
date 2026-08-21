@@ -24,7 +24,11 @@ return {
     -- later: ["enricher-1"] = { "mekanism:dust_iron" },
   },
 
-  batch = { min = 8, max = 72 },  -- order at least min, at most max per claim
+  batch = {
+    min = 8,          -- don't order until at least this many are buffered
+    max = 72,         -- cap per claim
+    max_inflight = 4, -- concurrent outstanding claims allowed per item type
+  },
   poll_s = 2,                     -- input buffer scan interval
   receive_timeout_s = 60,         -- accept a partial delivery after this long
   -- outbox_drain_timeout_s = 30, -- max wait for the outbox to empty before

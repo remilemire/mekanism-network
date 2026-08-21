@@ -7,7 +7,8 @@ the router calls with a delivery offer.
 
 Local state:
   * a persistent ledger (one JSON per order) so reboots don't lose track
-  * self.active[input_item] = claim id -- one outstanding order per item type
+  * self.active[claim_id] = input item -- in-flight orders; up to
+    batch.max_inflight claims per item type may be outstanding at once
   * self.pending -- the single delivery currently being received (the sender
     has one inbox porter, so deliveries are serialized; concurrent offers
     get a structured "busy" error and the router retries later)
@@ -71,7 +72,7 @@ end
 function Sender:_resume()
   for id, entry in pairs(self.ledger:all(self.log)) do
     if entry.status == "shipped" then
-      self.active[entry.input_item] = id
+      self.active[id] = entry.input_item
       self.log:warn("resuming claim %s: %s shipped before reboot, awaiting delivery",
         util.short_id(id), entry.input_item)
     elseif entry.status == "receiving" then
@@ -83,11 +84,11 @@ function Sender:_resume()
       entry.received = entry.received or entry.amount
       entry.updated_at = util.now_ms()
       self.ledger:put(id, entry)
-      if entry.input_item then self.active[entry.input_item] = id end
+      self.active[id] = entry.input_item
       self.log:warn("claim %s was mid-delivery during reboot; will confirm receipt",
         util.short_id(id))
     elseif entry.status == "confirm_pending" then
-      if entry.input_item then self.active[entry.input_item] = id end
+      self.active[id] = entry.input_item
     end
   end
 end
@@ -95,10 +96,17 @@ end
 -- Ordering -------------------------------------------------------------------
 
 function Sender:_order_tick()
+  local batch = self.config.batch or {}
+  local max_inflight = batch.max_inflight or 4
+  local inflight = {}
+  for _, item in pairs(self.active) do
+    inflight[item] = (inflight[item] or 0) + 1
+  end
   for item, service in pairs(self.item_routes) do
-    if not self.active[item] then
+    if (inflight[item] or 0) < max_inflight then
       local count = self.input_buffer:count(item)
-      local batch = self.config.batch or {}
+      -- batch.min keeps items trickling in through pipes from fragmenting
+      -- into many tiny claims; one order per item per tick does the rest.
       if count >= (batch.min or 1) then
         self:_place_order(item, service, math.min(count, batch.max or 64))
       end
@@ -175,7 +183,7 @@ function Sender:_place_order(item, service, amount)
     status = "shipped",
     updated_at = util.now_ms(),
   })
-  self.active[item] = claim.id
+  self.active[claim.id] = item
   self.log:info("claim %s: shipped %d x %s", util.short_id(claim.id), moved, item)
 end
 
@@ -295,7 +303,7 @@ function Sender:_finish_delivery(p, received)
 
   -- The goods are physically here, so free the order slot either way; the
   -- janitor keeps retrying the router confirmation if it failed.
-  if entry.input_item then self.active[entry.input_item] = nil end
+  self.active[p.claim_id] = nil
 
   self.inbox_porter:ensure_frequency(self.idle_frequency)
   self.pending = nil
@@ -320,7 +328,7 @@ function Sender:_janitor_tick()
         entry.status = "completed"
         entry.updated_at = now
         self.ledger:put(id, entry)
-        if entry.input_item then self.active[entry.input_item] = nil end
+        self.active[id] = nil
         self.log:info("claim %s: receipt confirmed after retry", util.short_id(id))
       end
     elseif (entry.status == "completed" or entry.status == "failed")
@@ -331,7 +339,7 @@ function Sender:_janitor_tick()
 
   -- Reconcile in-flight orders with the router: claims can expire or fail
   -- over there, and without this the order slot would leak forever.
-  for item, id in pairs(util.shallow_copy(self.active)) do
+  for id, item in pairs(util.shallow_copy(self.active)) do
     local entry = self.ledger:get(id)
     if not entry or entry.status == "shipped" then
       local ok, body, err = self.node:request(self.router, "claim.get",
@@ -340,17 +348,17 @@ function Sender:_janitor_tick()
         local s = body.claim.status
         if s == "failed" or s == "expired" then
           self.log:warn("claim %s (%s) ended as %s at the router -- freeing the order slot",
-            util.short_id(id), item, s)
+            util.short_id(id), tostring(item), s)
           if entry then
             entry.status = "failed"
             entry.updated_at = now
             self.ledger:put(id, entry)
           end
-          self.active[item] = nil
+          self.active[id] = nil
         end
       elseif not ok and err and err.code == "not_found" then
         -- The router archived it, meaning it finished a while ago.
-        self.active[item] = nil
+        self.active[id] = nil
         if entry then
           entry.status = "completed"
           entry.updated_at = now
