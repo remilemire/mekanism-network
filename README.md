@@ -110,6 +110,9 @@ mekanet aims for *at-least-once messaging + idempotent handlers + reconciliation
   against the router so an expired claim can't wedge an item type forever.
 - Ports stay locked while a delivery is unconfirmed — a stuck lane is a loud
   janitor warning, never silent item mixing.
+- The sender never retunes its outbox porter while a previous shipment is
+  still draining, so back-to-back orders to different services can't
+  teleport leftovers to the wrong factory.
 - Frequencies are re-asserted continuously (`ensure_frequency` is idempotent),
   so a stray click in a porter GUI heals itself within a minute.
 
@@ -161,8 +164,9 @@ but starting the router first makes the first minute quieter.
 2. Copy `examples/config.crusher.lua`, change `name` (e.g. `enricher-1`),
    give it a fresh `input_frequency` (e.g. `mekanet.enrich.in`), keep
    `output_frequency = "mekanet.intake"`, and write its recipe table.
-3. Add routes on whichever senders should use it:
-   `["mekanism:dust_iron"] = { service = "enricher-1" }`.
+3. Add it to the routes of whichever senders should use it:
+   `["enricher-1"] = { "mekanism:dust_iron" }`. Routes are keyed by service,
+   and every item may be routed to exactly one service per sender.
 
 No router changes needed — claims are service-agnostic.
 

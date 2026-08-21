@@ -18,14 +18,17 @@ return {
   },
 
   routes = {
-    -- item appearing in input_buffer -> service (rednet hostname) that processes it
-    ["minecraft:iron_ingot"] = { service = "crusher-1" },
-    -- later: ["mekanism:dust_iron"] = { service = "enricher-1" },
+    -- service (rednet hostname) -> items from input_buffer it processes.
+    -- Each item may appear under exactly one service.
+    ["crusher-1"] = { "minecraft:iron_ingot" },
+    -- later: ["enricher-1"] = { "mekanism:dust_iron" },
   },
 
-  batch = { min = 8, max = 72 }, -- order at least min, at most max per claim
-  poll_s = 2,                    -- input buffer scan interval
-  receive_timeout_s = 60,        -- accept a partial delivery after this long
+  batch = { min = 8, max = 72 },  -- order at least min, at most max per claim
+  poll_s = 2,                     -- input buffer scan interval
+  receive_timeout_s = 60,         -- accept a partial delivery after this long
+  -- outbox_drain_timeout_s = 30, -- max wait for the outbox to empty before
+  --                                 retuning it toward a different service
 
   -- idle_frequency = "mekanet.idle.7", -- default: unique per computer id
   -- data_dir = "/data/sender",

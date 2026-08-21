@@ -38,6 +38,27 @@ function util.shallow_copy(t)
   return out
 end
 
+--- Invert a service -> {items} routes table into item -> service, refusing
+--- ambiguity: every item may be routed to exactly one service.
+function util.invert_routes(routes)
+  local by_item = {}
+  for service, items in pairs(routes or {}) do
+    if type(items) ~= "table" then
+      error(("routes[%q] must be a list of item names"):format(tostring(service)), 0)
+    end
+    for _, item in ipairs(items) do
+      if by_item[item] == service then
+        error(("item %s appears twice in the routes for %s"):format(item, service), 0)
+      elseif by_item[item] then
+        error(("item %s is routed to both %s and %s -- each item may have exactly one service")
+          :format(item, by_item[item], service), 0)
+      end
+      by_item[item] = service
+    end
+  end
+  return by_item
+end
+
 --- Wrap a peripheral or die with a message that lists what IS attached,
 --- so a typo in config.lua is a ten-second fix instead of a mystery.
 function util.require_peripheral(name, why)

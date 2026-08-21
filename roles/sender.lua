@@ -38,6 +38,9 @@ function Sender:init(config, log)
     log = log,
   })
   self.ledger = JsonStore.new(config.data_dir or "/data/sender")
+  -- Config routes are service -> {items}; invert to item -> service for the
+  -- order loop. Errors here (duplicate items) surface before anything runs.
+  self.item_routes = util.invert_routes(config.routes)
   self.active = {}
   self.pending = nil
 end
@@ -92,32 +95,56 @@ end
 -- Ordering -------------------------------------------------------------------
 
 function Sender:_order_tick()
-  for item, route in pairs(self.config.routes or {}) do
+  for item, service in pairs(self.item_routes) do
     if not self.active[item] then
       local count = self.input_buffer:count(item)
       local batch = self.config.batch or {}
       if count >= (batch.min or 1) then
-        self:_place_order(item, route, math.min(count, batch.max or 64))
+        self:_place_order(item, service, math.min(count, batch.max or 64))
       end
     end
   end
 end
 
-function Sender:_place_order(item, route, amount)
-  local request_id = util.uuid()
-  self.log:info("ordering %d x %s from %s", amount, item, route.service)
+--- Safe to retune the outbox porter to `frequency`? True when it already
+--- sits there, or once the outbox chest has fully drained. Retuning with
+--- leftovers inside would teleport a previous shipment to the wrong service.
+function Sender:_await_outbox_ready(frequency)
+  local deadline = util.now_ms() + (self.config.outbox_drain_timeout_s or 30) * 1000
+  while true do
+    if self.outbox_porter:get_frequency() == frequency then return true end
+    local leftovers = 0
+    for _, n in pairs(self.outbox_inventory:counts()) do leftovers = leftovers + n end
+    if leftovers == 0 then return true end
+    if util.now_ms() > deadline then return false end
+    sleep(1)
+  end
+end
 
-  local ok, body, err = self.node:request(route.service, "service.request", {
+function Sender:_place_order(item, service, amount)
+  local request_id = util.uuid()
+  self.log:info("ordering %d x %s from %s", amount, item, service)
+
+  local ok, body, err = self.node:request(service, "service.request", {
     id = request_id, item = item, amount = amount,
   })
   if not ok then
     self.log:warn("order for %s rejected by %s: %s",
-      item, route.service, err and (err.message or err.code) or "?")
+      item, service, err and (err.message or err.code) or "?")
     return
   end
   local claim = body.claim
 
-  -- Point our outbox at the service's intake frequency and ship.
+  -- Point our outbox at the service's intake frequency and ship -- but only
+  -- once any previous shipment has finished draining out of the outbox.
+  if not self:_await_outbox_ready(body.input_frequency) then
+    self.log:warn("claim %s: outbox still draining toward %s -- aborting, will retry later",
+      util.short_id(claim.id), tostring(self.outbox_porter:get_frequency()))
+    self.node:request(self.router, "claim.abort", {
+      claim_id = claim.id, reason = "outbox_blocked",
+    })
+    return
+  end
   self.outbox_porter:ensure_frequency(body.input_frequency)
   local moved = self.input_buffer:push_item(self.outbox_inventory:get_name(), item, claim.input_amount)
   if moved == 0 then
