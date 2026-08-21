@@ -1,0 +1,10 @@
+# Per-computer config: copy an example next to main.lua on each computer,
+# never commit the real one (device names differ per machine).
+/config.lua
+
+# Runtime state (claim ledgers, sender ledgers, logs) -- lands inside the
+# repo when it's mounted as a CC computer's root, e.g. in CraftOS-PC.
+/data/
+
+# OS noise
+.DS_Store
