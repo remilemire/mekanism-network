@@ -20,11 +20,7 @@ return {
   output_frequency = "mekanet.intake",  -- must equal the router's intake_frequency
 
   recipes = {
-    -- input item -> what the factory turns it into (and at what ratio).
-    -- IMPORTANT: use the REAL output id from your pack -- modpacks often
-    -- unify dusts under another mod's id (e.g. "ftbmaterials:iron_dust").
-    -- Crush one item and read the id from the router's intake in
-    -- tools/status.lua; a wrong id leaves claims stuck in_transit forever.
+    -- input item -> what the factory turns it into (and at what ratio)
     ["minecraft:iron_ingot"] = { output = "mekanism:dust_iron", ratio = 1 },
     ["minecraft:gold_ingot"] = { output = "mekanism:dust_gold", ratio = 1 },
     -- ["minecraft:cobblestone"] = { output = "minecraft:gravel", ratio = 1 },
