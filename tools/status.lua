@@ -9,7 +9,7 @@ package.path = prefix .. "/?.lua;" .. package.path
 local Node = require("lib.net")
 local Log = require("lib.log")
 
-local node = Node.new({ log = Log.new("status", { level = "warn", file = false }) })
+local node = Node.new({ client = true, log = Log.new("status", { level = "warn", file = false }) })
 node:open()
 
 local tasks = node:tasks()

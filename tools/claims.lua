@@ -18,7 +18,7 @@ local Node = require("lib.net")
 local Log = require("lib.log")
 local util = require("lib.util")
 
-local node = Node.new({ log = Log.new("claims", { level = "warn", file = false }) })
+local node = Node.new({ client = true, log = Log.new("claims", { level = "warn", file = false }) })
 node:open()
 
 local tasks = node:tasks()

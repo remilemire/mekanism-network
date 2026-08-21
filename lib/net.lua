@@ -39,19 +39,26 @@ function Node:init(opts)
   self.request_timeout_s = opts.request_timeout_s or 3
   self.request_retries = opts.request_retries or 4
   self.seen_ttl_ms = (opts.seen_ttl_s or 300) * 1000
+  -- Client mode: this node only makes requests and NEVER answers them.
+  -- Tools must use it -- a tool sharing a computer with a role (multishell,
+  -- or a stale hostname registration) would otherwise race the real node
+  -- for inbound requests and answer them wrongly.
+  self.client = opts.client or false
 
   self.handlers = {}
   self.queue = {}        -- inbound requests waiting for the worker
-  self.responses = {}    -- response envelopes keyed by request id
+  self.responses = {}    -- {res, at} keyed by request id
   self.seen = {}         -- request id -> {status="pending"|"done", res, at}
   self.lookup_cache = {} -- hostname -> computer id
 
-  self:handle("sys.ping", function()
-    return { pong = true, id = os.getComputerID(), hostname = self.hostname }
-  end)
-  self:handle("sys.status", function()
-    return { role = "unknown", id = os.getComputerID(), hostname = self.hostname }
-  end)
+  if not self.client then
+    self:handle("sys.ping", function()
+      return { pong = true, id = os.getComputerID(), hostname = self.hostname }
+    end)
+    self:handle("sys.status", function()
+      return { role = "unknown", id = os.getComputerID(), hostname = self.hostname }
+    end)
+  end
 end
 
 function Node:open()
@@ -126,8 +133,9 @@ function Node:request(target, method, body, opts)
         local ev, p1 = os.pullEvent()
         if ev == EV_RES and p1 == id then
           os.cancelTimer(timer)
-          local res = self.responses[id]
+          local entry = self.responses[id]
           self.responses[id] = nil
+          local res = entry and entry.res
           if res and res.ok then return true, res.body or {} end
           return false, nil, (res and res.err) or { code = "error" }
         elseif ev == "timer" and p1 == timer then
@@ -150,7 +158,7 @@ function Node:_net_loop()
   while true do
     local from, msg = rednet.receive(self.protocol)
     if type(msg) == "table" and msg.v == 1 and type(msg.id) == "string" then
-      if msg.kind == "req" then
+      if msg.kind == "req" and not self.client then
         local seen = self.seen[msg.id]
         if not seen then
           self.seen[msg.id] = { status = "pending", at = util.now_ms() }
@@ -163,7 +171,7 @@ function Node:_net_loop()
         -- status "pending": duplicate while the handler runs -- drop it, the
         -- client keeps retrying and will hit the cache once we finish.
       elseif msg.kind == "res" then
-        self.responses[msg.id] = msg
+        self.responses[msg.id] = { res = msg, at = util.now_ms() }
         os.queueEvent(EV_RES, msg.id)
       end
     end
@@ -216,6 +224,13 @@ function Node:_janitor_loop()
       if entry.at < cutoff then stale[#stale + 1] = id end
     end
     for _, id in ipairs(stale) do self.seen[id] = nil end
+    -- Responses nobody claimed (e.g. addressed to another node sharing this
+    -- computer, or a request that gave up) would otherwise pile up forever.
+    local orphaned = {}
+    for id, entry in pairs(self.responses) do
+      if entry.at < cutoff then orphaned[#orphaned + 1] = id end
+    end
+    for _, id in ipairs(orphaned) do self.responses[id] = nil end
   end
 end
 
