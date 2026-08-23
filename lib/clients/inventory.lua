@@ -54,12 +54,21 @@ end
 
 --- Move up to `amount` of `item` into the inventory named `destination`
 --- (which must share a wired network with this one). Returns items moved.
+---
+--- Drawer-style storage (Functional Storage, Storage Drawers, ...) holds
+--- many stacks in one slot, while a single pushItems call extracts at most
+--- one stack -- so keep pushing the same slot until it stops yielding.
+--- For plain chests the extra call just returns 0 immediately.
 function InventoryClient:push_item(destination, item, amount)
   local moved = 0
   for slot, stack in pairs(self.device.list()) do
     if moved >= amount then break end
     if stack.name == item then
-      moved = moved + (self.device.pushItems(destination, slot, amount - moved) or 0)
+      while moved < amount do
+        local n = self.device.pushItems(destination, slot, amount - moved) or 0
+        if n == 0 then break end
+        moved = moved + n
+      end
     end
   end
   return moved
