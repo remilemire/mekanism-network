@@ -173,7 +173,8 @@ function Sender:_place_order(item, service, amount)
   self.outbox_porter:ensure_frequency(body.input_frequency)
   local moved = self.input_buffer:push_item(self.outbox_inventory:get_name(), item, claim.input_amount)
   if moved == 0 then
-    self.log:warn("claim %s: nothing left to ship, aborting", util.short_id(claim.id))
+    self.log:warn("claim %s: could not move any %s into the outbox (buffer empty, or outbox full/locked to another item?) -- aborting",
+      util.short_id(claim.id), item)
     self.node:request(self.router, "claim.abort", {
       claim_id = claim.id, reason = "nothing_to_ship",
     })
