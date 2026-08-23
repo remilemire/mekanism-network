@@ -323,7 +323,7 @@ function Sender:_finish_delivery(p, received)
   self.active[p.claim_id] = nil
 
   self.inbox_porter:ensure_frequency(self.idle_frequency)
-  self:_drain_inbox()
+  self:_drain_inbox(true)
   self.pending = nil
   self.log:info("claim %s: received %d x %s%s",
     util.short_id(p.claim_id), received, p.item,
@@ -331,10 +331,16 @@ function Sender:_finish_delivery(p, received)
 end
 
 --- Hand everything in the inbox buffer onward to the result inventory.
---- The claim is closed by the time this runs, so pipes pulling from the
---- result chest can no longer disturb any delivery accounting.
-function Sender:_drain_inbox()
+--- Runs at boot, at claim close, and from the janitor whenever leftovers
+--- remain (e.g. the result inventory was momentarily full and freed up).
+---
+--- Never drains mid-delivery unless forced: arrivals are counted in this
+--- buffer, and moving items out from under that count would corrupt the
+--- baseline. _finish_delivery forces the drain while `pending` still
+--- rejects new offers as busy, so forcing there is race-free.
+function Sender:_drain_inbox(force)
   if self.inbox_inventory == self.result_inventory then return end
+  if self.pending and not force then return end
   local moved = 0
   for item, n in pairs(self.inbox_inventory:counts()) do
     moved = moved + self.inbox_inventory:push_item(self.result_inventory:get_name(), item, n)
@@ -345,8 +351,12 @@ function Sender:_drain_inbox()
   end
   local left = 0
   for _, n in pairs(self.inbox_inventory:counts()) do left = left + n end
-  if left > 0 then
-    self.log:warn("%d items stuck in the inbox buffer -- is the result inventory full?", left)
+  if left == 0 then
+    self.drain_nag_at = nil
+  elseif util.now_ms() - (self.drain_nag_at or 0) > 60000 then
+    self.drain_nag_at = util.now_ms()
+    self.log:warn("%d items still in the inbox buffer (result inventory full?) -- will keep retrying",
+      left)
   end
 end
 
@@ -354,6 +364,11 @@ end
 
 function Sender:_janitor_tick()
   local now = util.now_ms()
+
+  -- Retry the inbox->result handoff: leftovers strand here whenever the
+  -- result inventory was full at claim close. (No-op while a delivery is
+  -- being received -- see _drain_inbox.)
+  self:_drain_inbox()
 
   for id, entry in pairs(self.ledger:all()) do
     if entry.status == "confirm_pending" then
