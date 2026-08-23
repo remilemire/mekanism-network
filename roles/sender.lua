@@ -352,11 +352,19 @@ function Sender:_drain_inbox(force)
   local left = 0
   for _, n in pairs(self.inbox_inventory:counts()) do left = left + n end
   if left == 0 then
+    self.drain_stuck_since = nil
     self.drain_nag_at = nil
-  elseif util.now_ms() - (self.drain_nag_at or 0) > 60000 then
-    self.drain_nag_at = util.now_ms()
-    self.log:warn("%d items still in the inbox buffer (result inventory full?) -- will keep retrying",
-      left)
+  else
+    -- The result inventory being full at this exact instant is routine when
+    -- pipes are pulling from it -- the janitor retries and the items move
+    -- once space frees. Only speak up if the backlog persists.
+    self.drain_stuck_since = self.drain_stuck_since or util.now_ms()
+    if util.now_ms() - self.drain_stuck_since > 60000
+        and util.now_ms() - (self.drain_nag_at or 0) > 60000 then
+      self.drain_nag_at = util.now_ms()
+      self.log:warn("%d items waiting in the inbox buffer for %s -- the result inventory keeps running out of room",
+        left, util.fmt_age(util.now_ms() - self.drain_stuck_since))
+    end
   end
 end
 
