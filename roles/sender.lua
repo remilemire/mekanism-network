@@ -54,11 +54,27 @@ function Sender:setup()
   self.outbox_porter = EntangloporterClient.new(d.outbox_porter)
   self.inbox_porter = EntangloporterClient.new(d.inbox_porter)
 
+  -- Deliveries are verified in a dedicated inbox buffer that nothing else
+  -- drains; only after the claim is closed does the computer move the goods
+  -- to the (possibly piped-up) result inventory. Without the buffer we fall
+  -- back to watching the result inventory directly, which works only if
+  -- nothing pulls from it while a delivery is arriving.
+  if d.inbox_inventory then
+    self.inbox_inventory = InventoryClient.new(d.inbox_inventory)
+  else
+    self.inbox_inventory = self.result_inventory
+    self.log:warn("no devices.inbox_inventory configured; verifying deliveries in the result inventory -- pipes pulling from it can race the count")
+  end
+
   self.node:open()
 
   -- Park the inbox on a private idle frequency so stray items on a shared
   -- delivery frequency can't leak in between deliveries.
   self.inbox_porter:ensure_frequency(self.idle_frequency)
+
+  -- Anything sitting in the inbox buffer is from a delivery that finished
+  -- (or was interrupted) before a reboot; hand it onward.
+  self:_drain_inbox()
 
   self.node:handle("delivery.offer", function(body) return self:_on_offer(body) end)
   self.node:handle("delivery.dispatched", function(body) return self:_on_dispatched(body) end)
@@ -77,9 +93,10 @@ function Sender:_resume()
         util.short_id(id), entry.input_item)
     elseif entry.status == "receiving" then
       -- The inbox porter keeps its frequency across reboots, so the goods
-      -- almost certainly flowed into the result inventory while we were
-      -- down. Confirm optimistically; the router is the source of truth and
-      -- tools/claims.lua will show anything that disagrees.
+      -- almost certainly flowed into the inbox buffer while we were down
+      -- (setup already drained them onward). Confirm optimistically; the
+      -- router is the source of truth and tools/claims.lua will show
+      -- anything that disagrees.
       entry.status = "confirm_pending"
       entry.received = entry.received or entry.amount
       entry.updated_at = util.now_ms()
@@ -199,7 +216,7 @@ function Sender:_on_offer(body)
       item = body.item,
       amount = body.amount,
       frequency = body.frequency,
-      baseline = self.result_inventory:count(body.item),
+      baseline = self.inbox_inventory:count(body.item),
       offered_at = util.now_ms(),
     }
   end
@@ -237,7 +254,7 @@ function Sender:_on_dispatched(body)
       item = body.item,
       amount = body.amount,
       frequency = body.frequency,
-      baseline = self.result_inventory:count(body.item),
+      baseline = self.inbox_inventory:count(body.item),
       offered_at = util.now_ms(),
       dispatched_at = util.now_ms(),
     }
@@ -270,7 +287,7 @@ function Sender:_receipt_tick()
   -- Self-heal: someone fiddling with the porter GUI shouldn't strand a delivery.
   self.inbox_porter:ensure_frequency(p.frequency)
 
-  local arrived = self.result_inventory:count(p.item) - p.baseline
+  local arrived = self.inbox_inventory:count(p.item) - p.baseline
   local waited = util.now_ms() - (p.dispatched_at or p.offered_at)
   local timeout_ms = (self.config.receive_timeout_s or 60) * 1000
 
@@ -306,10 +323,31 @@ function Sender:_finish_delivery(p, received)
   self.active[p.claim_id] = nil
 
   self.inbox_porter:ensure_frequency(self.idle_frequency)
+  self:_drain_inbox()
   self.pending = nil
   self.log:info("claim %s: received %d x %s%s",
     util.short_id(p.claim_id), received, p.item,
     ok and "" or " (router confirmation still pending)")
+end
+
+--- Hand everything in the inbox buffer onward to the result inventory.
+--- The claim is closed by the time this runs, so pipes pulling from the
+--- result chest can no longer disturb any delivery accounting.
+function Sender:_drain_inbox()
+  if self.inbox_inventory == self.result_inventory then return end
+  local moved = 0
+  for item, n in pairs(self.inbox_inventory:counts()) do
+    moved = moved + self.inbox_inventory:push_item(self.result_inventory:get_name(), item, n)
+  end
+  if moved > 0 then
+    self.log:debug("moved %d items from the inbox buffer to %s",
+      moved, self.result_inventory:get_name())
+  end
+  local left = 0
+  for _, n in pairs(self.inbox_inventory:counts()) do left = left + n end
+  if left > 0 then
+    self.log:warn("%d items stuck in the inbox buffer -- is the result inventory full?", left)
+  end
 end
 
 -- Janitor --------------------------------------------------------------------
@@ -379,6 +417,9 @@ function Sender:_status()
     active_orders = self.active,
     input_buffer = self.input_buffer:counts(),
   }
+  if self.inbox_inventory ~= self.result_inventory then
+    status.inbox_buffer = self.inbox_inventory:counts()
+  end
   if self.pending then
     status.receiving = {
       claim = util.short_id(self.pending.claim_id),

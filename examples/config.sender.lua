@@ -14,7 +14,10 @@ return {
     outbox_inventory = "minecraft:barrel_1",   -- inventory A-2: drains into outbox_porter
     outbox_porter = "quantumEntangloporter_0", -- entangloporter A-out
     inbox_porter = "quantumEntangloporter_1",  -- entangloporter A-in: receives deliveries
-    result_inventory = "minecraft:barrel_2",   -- finished goods land here; pipe your machine from it
+    inbox_inventory = "minecraft:barrel_3",    -- fed by inbox_porter; do NOT pipe out of
+                                               -- it -- deliveries are verified here, then
+                                               -- the computer moves them on itself
+    result_inventory = "minecraft:barrel_2",   -- finished goods end up here; pipe your machine from it
   },
 
   routes = {

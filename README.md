@@ -27,7 +27,9 @@ outbox porter (A-out) ══ mekanet.crush.in ══> input porter (B-in)
                                                                                              | (your pipes)
                                                                                           intake buffer
                                                                                              | pushItems (computer C)
-result chest                                                                              port chest 1..8
+result chest
+   ^ pushItems (computer A, after the claim closes)
+inbox buffer                                                                              port chest 1..8
    ^ (your pipes)                                                                            | (your pipes)
 inbox porter (A-in) <═══════════════ mekanet.out.N (negotiated per delivery) ═══════════  port porter 1..8
 ```
@@ -59,10 +61,12 @@ inventories it touches** (chests, barrels, and the entangloporters it retunes).
    router retries shortly).
 7. **Deliver** — the router locks the port, pushes the dust into that port's
    chest, and sends `delivery.dispatched`. The dust teleports to the sender's
-   result chest.
-8. **Confirm** — the sender watches its result inventory, and once the goods
-   are in hand sends `delivery.received`. The router completes the claim and
-   frees the port; the sender parks its inbox on a private idle frequency.
+   inbox buffer.
+8. **Confirm** — the sender watches its inbox buffer (a chest nothing else
+   drains), and once the goods are in hand sends `delivery.received`. The
+   router completes the claim and frees the port; the sender parks its inbox
+   porter on a private idle frequency and only then moves the goods to the
+   result chest, so pipes pulling from it can't race the delivery count.
 
 ## Claim lifecycle
 
