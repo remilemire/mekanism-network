@@ -314,6 +314,21 @@ function Router:_janitor_tick()
     end
   end
 
+  -- Storage hygiene, every ~10 minutes (and once right after boot): prune
+  -- old archived claims and shout before the disk quota strangles writes.
+  if now - (self.archive_pruned_at or 0) > 600 * 1000 then
+    self.archive_pruned_at = now
+    local pruned = self.ledger:prune_archive((self.config.archive_retention_s or 86400) * 1000)
+    if pruned > 0 then
+      self.log:info("pruned %d archived claims", pruned)
+    end
+    local free = fs.getFreeSpace("/")
+    if free < 100 * 1024 then
+      self.log:warn("only %dKB of disk space left -- claim persistence fails at zero",
+        math.floor(free / 1024))
+    end
+  end
+
   -- Re-assert static frequencies; a stray GUI click shouldn't derail lanes.
   self.intake_porter:ensure_frequency(self.config.intake_frequency)
   for i, porter in ipairs(self.port_porters) do

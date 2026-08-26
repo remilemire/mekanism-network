@@ -20,7 +20,11 @@ end
 function JsonStore:put(id, value)
   local target = self:path(id)
   local tmp = target .. ".tmp"
-  local f = fs.open(tmp, "w")
+  local f, err = fs.open(tmp, "w")
+  if not f then
+    error(("cannot write %s: %s (free space: %s bytes)")
+      :format(tmp, err or "unknown", tostring(fs.getFreeSpace("/"))), 0)
+  end
   f.write(textutils.serializeJSON(value))
   f.close()
   if fs.exists(target) then fs.delete(target) end
@@ -31,6 +35,7 @@ function JsonStore:get(id)
   local target = self:path(id)
   if not fs.exists(target) then return nil end
   local f = fs.open(target, "r")
+  if not f then return nil end
   local raw = f.readAll()
   f.close()
   return textutils.unserializeJSON(raw)

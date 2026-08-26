@@ -138,6 +138,22 @@ function ClaimLedger:archive(id)
   self.cache[id] = nil
 end
 
+--- Delete archived claims older than max_age_ms (and any unreadable ones).
+--- Without this the archive grows until the computer's disk quota fills and
+--- every ledger write starts failing. Returns how many were removed.
+function ClaimLedger:prune_archive(max_age_ms)
+  local cutoff = util.now_ms() - max_age_ms
+  local pruned = 0
+  for _, id in ipairs(self.archive_store:ids()) do
+    local ok, c = pcall(function() return self.archive_store:get(id) end)
+    if not ok or not c or (c.updated_at or 0) < cutoff then
+      self.archive_store:delete(id)
+      pruned = pruned + 1
+    end
+  end
+  return pruned
+end
+
 claims.ClaimLedger = ClaimLedger
 
 return claims

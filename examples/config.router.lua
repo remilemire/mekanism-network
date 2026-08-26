@@ -32,6 +32,8 @@ return {
   claim_ttl_s = 900,   -- expire claims whose goods never show up
   stuck_after_s = 300, -- nag about unconfirmed deliveries after this long
   retention_s = 3600,  -- archive finished claims after this long
+  -- archive_retention_s = 86400, -- delete archived claims after this long
+  --                                 (the disk quota is ~1MB; never keep forever)
   poll_s = 2,
   data_dir = "/data/claims",
   -- log = { level = "debug" },
