@@ -179,7 +179,8 @@ No router changes needed — claims are service-agnostic.
 - The router's `intake_inventory` may be a single peripheral name or a list
   of names treated as one combined buffer (counts sum across all of them,
   and deliveries drain them in the listed order).
-- `tools/status.lua` — live view of every node: buffers, ports, claim counts.
+- `tools/status.lua` — compact color-coded view of every node: buffers,
+  ports, claim counts. Pass `-v` for the full raw payloads.
 - `tools/claims.lua [status] [router-host]` — inspect the ledger.
 - Logs go to the terminal and `/data/logs/<name>.log` (rotating).
 - Finished claims are archived under `/data/claims/archive/` after an hour.
