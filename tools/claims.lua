@@ -30,10 +30,15 @@ package.path = prefix .. "/?.lua;" .. package.path
 local Node = require("lib.net")
 local Log = require("lib.log")
 local util = require("lib.util")
+local render = require("lib.render")
+
+local line = render.line
 
 local node = Node.new({ client = true, log = Log.new("claims", { level = "warn", file = false }) })
 node:open()
 
+--- Full forensic view of one claim. Item ids are shown unabbreviated here
+--- on purpose: id mismatches are exactly what this view is for.
 local function show_claim()
   local ok, body, err = node:request(router_host, "claim.get",
     { claim_id = show_target }, { retries = 1, timeout_s = 3 })
@@ -43,20 +48,21 @@ local function show_claim()
   end
   local c = body.claim
   local now = util.now_ms()
-  local out = {}
-  out[#out + 1] = "claim " .. tostring(c.id)
-  out[#out + 1] = "  status:  " .. tostring(c.status)
-    .. (c.abort_reason and (" (aborted: " .. tostring(c.abort_reason) .. ")") or "")
-  out[#out + 1] = ("  output:  %d x %s"):format(c.amount or 0, tostring(c.item))
-  out[#out + 1] = ("  input:   %d x %s"):format(c.input_amount or 0, tostring(c.input_item))
-  out[#out + 1] = ("  sender:  #%s   service: %s"):format(tostring(c.sender_id), tostring(c.service))
-  out[#out + 1] = ("  port: %s   dispatched: %s   received: %s"):format(
-    tostring(c.port or "-"), tostring(c.dispatched or "-"), tostring(c.received or "-"))
-  out[#out + 1] = "  history:"
+  line(colors.white, "claim " .. tostring(c.id))
+  line(colors.gray, "  status:  ", render.status_color(c.status), tostring(c.status),
+    colors.red, c.abort_reason and ("  (" .. tostring(c.abort_reason) .. ")") or "")
+  line(colors.gray, "  output:  ", colors.white, ("%d x %s"):format(c.amount or 0, tostring(c.item)))
+  line(colors.gray, "  input:   ", colors.white, ("%d x %s"):format(c.input_amount or 0, tostring(c.input_item)))
+  line(colors.gray, "  sender:  ", colors.white, "#" .. tostring(c.sender_id),
+    colors.gray, "   service: ", colors.white, tostring(c.service))
+  line(colors.gray, "  port: ", colors.white, tostring(c.port or "-"),
+    colors.gray, "   dispatched: ", colors.white, tostring(c.dispatched or "-"),
+    colors.gray, "   received: ", colors.white, tostring(c.received or "-"))
+  line(colors.gray, "  history:")
   for _, h in ipairs(c.history or {}) do
-    out[#out + 1] = ("    %-11s %s ago"):format(tostring(h.status), util.fmt_age(now - (h.at or now)))
+    line(render.status_color(h.status), ("    %-11s"):format(tostring(h.status)),
+      colors.gray, util.fmt_age(now - (h.at or now)) .. " ago")
   end
-  textutils.pagedPrint(table.concat(out, "\n"))
 end
 
 local function list_claims()
@@ -70,16 +76,18 @@ local function list_claims()
     print("no claims" .. (status_filter and (" with status " .. status_filter) or ""))
     return
   end
-  local out = {
-    ("%-10s %-11s %6s %-28s %-6s %s")
-      :format("id", "status", "amount", "item", "sender", "age"),
-  }
+  local now = body.now or util.now_ms()
+  line(colors.gray, ("%-8s %-10s %4s %-15s %-3s %s")
+    :format("id", "status", "amt", "item", "snd", "age"))
   for _, c in ipairs(body.claims) do
-    out[#out + 1] = ("%-10s %-11s %6d %-28s #%-5d %s"):format(
-      util.short_id(c.id), c.status, c.amount, c.item, c.sender_id,
-      util.fmt_age((body.now or util.now_ms()) - c.created_at))
+    line(
+      colors.white, ("%-8s "):format(util.short_id(c.id)),
+      render.status_color(c.status), ("%-10s "):format(tostring(c.status)),
+      colors.white, ("%4d "):format(c.amount or 0),
+      colors.lightGray, ("%-15s "):format(render.short_item(c.item):sub(1, 15)),
+      colors.white, ("#%-2s "):format(tostring(c.sender_id)),
+      colors.gray, util.fmt_age(now - (c.created_at or now)))
   end
-  textutils.pagedPrint(table.concat(out, "\n"))
 end
 
 local tasks = node:tasks()
