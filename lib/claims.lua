@@ -138,6 +138,27 @@ function ClaimLedger:archive(id)
   self.cache[id] = nil
 end
 
+--- Find a claim by full id or unique prefix, checking live claims first and
+--- the archive second. Returns the claim, or nil plus true when ambiguous.
+function ClaimLedger:find(prefix)
+  if #prefix == 0 then return nil, false end
+  if self.cache[prefix] then return self.cache[prefix], false end
+  local matches = {}
+  for id, c in pairs(self.cache) do
+    if id:sub(1, #prefix) == prefix then matches[#matches + 1] = c end
+  end
+  if #matches == 0 then
+    for _, id in ipairs(self.archive_store:ids()) do
+      if id:sub(1, #prefix) == prefix then
+        local ok, c = pcall(function() return self.archive_store:get(id) end)
+        if ok and c then matches[#matches + 1] = c end
+      end
+    end
+  end
+  if #matches > 1 then return nil, true end
+  return matches[1], false
+end
+
 --- Delete archived claims older than max_age_ms (and any unreadable ones).
 --- Without this the archive grows until the computer's disk quota fills and
 --- every ledger write starts failing. Returns how many were removed.

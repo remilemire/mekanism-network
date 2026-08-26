@@ -181,7 +181,8 @@ No router changes needed — claims are service-agnostic.
   and deliveries drain them in the listed order).
 - `tools/status.lua` — compact color-coded view of every node: buffers,
   ports, claim counts. Pass `-v` for the full raw payloads.
-- `tools/claims.lua [status] [router-host]` — inspect the ledger.
+- `tools/claims.lua [status]` — list the ledger; `tools/claims.lua show <id>`
+  — one claim in full (abort reason, history timeline; id prefixes work).
 - Logs go to the terminal and `/data/logs/<name>.log` (rotating).
 - Finished claims are archived under `/data/claims/archive/` after an hour.
 - The one deliberate quirk: a claim whose goods never arrive expires after

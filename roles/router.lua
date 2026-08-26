@@ -160,7 +160,16 @@ function Router:_on_delivery_received(body)
 end
 
 function Router:_on_claim_get(body)
-  return { claim = self:_get_or_die(body.claim_id) }
+  -- Accepts a full id or a unique prefix (the short ids from tools/logs),
+  -- and also finds archived claims -- inspection shouldn't stop at pruning.
+  local c, ambiguous = self.ledger:find(tostring(body.claim_id or ""))
+  if ambiguous then
+    error({ code = "ambiguous", message = "multiple claims match that prefix" })
+  end
+  if not c then
+    error({ code = "not_found", message = "no claim " .. tostring(body.claim_id) })
+  end
+  return { claim = c }
 end
 
 function Router:_on_claim_list(body)
