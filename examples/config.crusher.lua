@@ -1,6 +1,6 @@
 --[[ Crushing service ("computer B"). The `service` role is generic -- this
 config is what makes it a crusher. An enrichment or infusing service later
-is this same file with a new name, its own frequencies, and its recipes.
+is this same file with a new name, its own chests, and its recipes.
 Copy to config.lua next to main.lua on the service computer. ]]
 
 return {
@@ -11,13 +11,13 @@ return {
   -- modem = "back",
 
   devices = {
-    input_porter = "quantumEntangloporter_0",  -- entangloporter B-in: feeds the crushing factory
-    output_porter = "quantumEntangloporter_1", -- entangloporter B-out: factory output, ships to router
-    -- machine = "crusher_0",                  -- optional: for energy/status readouts only
+    -- Both chests must be on the shared wired network. Your local plumbing
+    -- carries items input_chest -> machines -> output_chest.
+    input_chest = "minecraft:barrel_4",  -- senders ship raw goods here
+    output_chest = "minecraft:barrel_5", -- the factory ejects results here;
+                                         -- the router matches claims against it
+    -- machine = "crusher_0",            -- optional: energy/status readouts only
   },
-
-  input_frequency = "mekanet.crush.in", -- senders are told to ship here
-  output_frequency = "mekanet.intake",  -- must equal the router's intake_frequency
 
   recipes = {
     -- input item -> what the factory turns it into (and at what ratio)

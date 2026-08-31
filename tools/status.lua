@@ -46,19 +46,24 @@ local function render_router(body)
   end
   line(table.unpack(segs))
 
-  local locked, total = 0, #(body.ports or {})
-  for _, port in ipairs(body.ports or {}) do
-    if port.claim and port.claim ~= "free" then locked = locked + 1 end
-  end
-  line(colors.gray, "  ports:  ", locked > 0 and colors.yellow or colors.white,
-    ("%d/%d locked"):format(locked, total))
-  line(colors.gray, "  intake: ", colors.white, fmt_counts(body.intake))
+  local names = {}
+  for _, w in ipairs(body.workers or {}) do names[#names + 1] = tostring(w.name) end
+  line(colors.gray, "  workers: ", #names > 0 and colors.white or colors.lightGray,
+    #names == 0 and "none (self-moving)" or (#names .. " (" .. table.concat(names, ", ") .. ")"))
 end
 
 local function render_service(body)
   line(colors.gray, "  recipes: ", colors.white, tostring(count_keys(body.recipes)),
     colors.gray, "   handled: ", colors.white, tostring(body.requests_handled or 0))
-  line(colors.gray, "  ship to: ", colors.white, tostring(body.input_frequency))
+  line(colors.gray, "  output: ", colors.white, fmt_counts(body.output))
+end
+
+local function render_worker(body)
+  line(colors.gray, "  jobs done: ", colors.white, tostring(body.jobs_done or 0))
+  if body.last_job then
+    line(colors.gray, "  last: ", colors.white, ("%d %s -> %s"):format(
+      body.last_job.moved or 0, short_item(body.last_job.item), tostring(body.last_job.to)))
+  end
 end
 
 local function render_sender(body)
@@ -70,17 +75,18 @@ local function render_sender(body)
   for item, n in pairs(per_item) do parts[#parts + 1] = n .. "x " .. short_item(item) end
   line(colors.gray, "  orders: ", #parts > 0 and colors.yellow or colors.lightGray,
     #parts == 0 and "none" or table.concat(parts, ", "))
-  if body.receiving then
-    line(colors.gray, "  incoming: ", colors.orange, ("%d %s (%s)"):format(
-      body.receiving.amount or 0, short_item(body.receiving.item), body.receiving.claim or "?"))
-  end
   line(colors.gray, "  buffer: ", colors.white, fmt_counts(body.input_buffer))
   if count_keys(body.inbox_buffer) > 0 then
     line(colors.gray, "  inbox:  ", colors.yellow, fmt_counts(body.inbox_buffer))
   end
 end
 
-local RENDERERS = { router = render_router, service = render_service, sender = render_sender }
+local RENDERERS = {
+  router = render_router,
+  service = render_service,
+  sender = render_sender,
+  worker = render_worker,
+}
 
 local function render_node(id, body)
   if not body then

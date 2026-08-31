@@ -16,7 +16,12 @@ render.STATUS_COLORS = {
   expired = colors.red,
 }
 render.STATUS_ORDER = { "created", "in_transit", "arrived", "delivering", "completed", "failed", "expired" }
-render.ROLE_COLORS = { router = colors.lightBlue, service = colors.orange, sender = colors.lime }
+render.ROLE_COLORS = {
+  router = colors.lightBlue,
+  service = colors.orange,
+  sender = colors.lime,
+  worker = colors.cyan,
+}
 
 local term_w, term_h = term.getSize()
 local printed = 0

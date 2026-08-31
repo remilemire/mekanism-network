@@ -55,9 +55,13 @@ local function show_claim()
   line(colors.gray, "  input:   ", colors.white, ("%d x %s"):format(c.input_amount or 0, tostring(c.input_item)))
   line(colors.gray, "  sender:  ", colors.white, "#" .. tostring(c.sender_id),
     colors.gray, "   service: ", colors.white, tostring(c.service))
-  line(colors.gray, "  port: ", colors.white, tostring(c.port or "-"),
-    colors.gray, "   dispatched: ", colors.white, tostring(c.dispatched or "-"),
-    colors.gray, "   received: ", colors.white, tostring(c.received or "-"))
+  line(colors.gray, "  from:    ", colors.white, tostring(c.service_output_chest))
+  line(colors.gray, "  to:      ", colors.white, tostring(c.inbox_chest))
+  line(colors.gray, "  moved: ", colors.white,
+    tostring(c.dispatched or 0) .. "/" .. tostring(c.amount or 0),
+    colors.gray, "   job seq: ", colors.white, tostring(c.deliver_seq or "-"),
+    colors.gray, "   worker: ", colors.white,
+    c.deliver_worker and ("#" .. tostring(c.deliver_worker)) or "-")
   line(colors.gray, "  history:")
   for _, h in ipairs(c.history or {}) do
     line(render.status_color(h.status), ("    %-11s"):format(tostring(h.status)),

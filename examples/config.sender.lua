@@ -1,23 +1,23 @@
 --[[ Sender ("computer A"): watches an input buffer and orders work from
-services. Copy to config.lua next to main.lua on the sender computer and
-edit the device names -- run tools/devices.lua to list what's attached. ]]
+services, shipping items itself over the shared wired network. Copy to
+config.lua next to main.lua on the sender computer and edit the device
+names -- run tools/devices.lua to list what's attached. ]]
 
 return {
   role = "sender",
   name = "fission-sender-1", -- unique rednet hostname for this computer
   protocol = "mekanet",      -- must match every other computer
   router_host = "router",
-  -- modem = "back",         -- optional: force a specific modem peripheral
+  -- modem = "back",         -- optional: force a specific modem for rednet
 
   devices = {
-    input_buffer = "minecraft:barrel_0",       -- inventory A-in: items needing processing
-    outbox_inventory = "minecraft:barrel_1",   -- inventory A-2: drains into outbox_porter
-    outbox_porter = "quantumEntangloporter_0", -- entangloporter A-out
-    inbox_porter = "quantumEntangloporter_1",  -- entangloporter A-in: receives deliveries
-    inbox_inventory = "minecraft:barrel_3",    -- fed by inbox_porter; do NOT pipe out of
-                                               -- it -- deliveries are verified here, then
-                                               -- the computer moves them on itself
-    result_inventory = "minecraft:barrel_2",   -- finished goods end up here; pipe your machine from it
+    -- All three must be on the shared wired network (activated wired modems).
+    input_buffer = "minecraft:barrel_0",     -- items needing processing
+    inbox_inventory = "minecraft:barrel_3",  -- deliveries land here; do NOT
+                                             -- pipe out of it -- the computer
+                                             -- moves items on itself
+    result_inventory = "minecraft:barrel_2", -- finished goods end up here;
+                                             -- pipe your machine from it
   },
 
   routes = {
@@ -32,12 +32,8 @@ return {
     max = 72,         -- cap per claim
     max_inflight = 4, -- concurrent outstanding claims allowed per item type
   },
-  poll_s = 2,                     -- input buffer scan interval
-  receive_timeout_s = 60,         -- accept a partial delivery after this long
-  -- outbox_drain_timeout_s = 30, -- max wait for the outbox to empty before
-  --                                 retuning it toward a different service
+  poll_s = 2,         -- input buffer scan interval
 
-  -- idle_frequency = "mekanet.idle.7", -- default: unique per computer id
   -- data_dir = "/data/sender",
   -- log = { level = "debug" },
   -- restart_delay_s = 5,
