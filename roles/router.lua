@@ -1,19 +1,28 @@
---[[ roles/router.lua -- "computer C", the claim broker and delivery hub.
+--[[ roles/router.lua -- "computer C", the claim broker and delivery
+dispatcher.
 
-Owns the claim ledger (persisted as one JSON per claim, so a reboot resumes
-exactly where it left off) and the bank of delivery ports: N chests that
-each drain into their own entangloporter on a fixed frequency.
+Owns the claim ledger (persisted one JSON per claim, so a reboot resumes
+where it left off) and a pool of worker computers that execute delivery
+moves over the shared wired network. There is no router-owned hardware any
+more: goods are matched in each service's output chest and delivered
+straight into the ordering sender's inbox chest.
 
 Loops:
-  * rpc server     -- claim.create / claim.shipped / claim.abort /
-                     delivery.received / claim.get / claim.list / sys.status
-  * intake watcher -- matches goods arriving in the intake buffer against
-                     open claims (FIFO, with reservations so two claims for
-                     the same item can't both count the same dust)
-  * delivery loop  -- offers arrived claims to their sender, locks a port,
-                     moves the goods, and notifies the sender
-  * janitor        -- expires stale claims, nags about stuck deliveries,
-                     archives finished ones, re-asserts port frequencies
+  * rpc server       -- claim.create / claim.shipped / claim.abort /
+                        claim.get / claim.list / worker.register / sys.status
+  * match tick       -- per service output chest, FIFO with per-item
+                        reservations, promotes claims to `arrived`
+  * dispatcher pool  -- N coroutines that hand deliver-jobs to workers
+                        (or execute them directly when no workers are alive)
+                        and reconcile unknown outcomes via job.result
+  * janitor          -- expires stale claims, nags about stuck deliveries,
+                        prunes archive/workers, watches disk space
+
+Delivery idempotency: each dispatch gets job id "<claim_id>-d<seq>" with
+the seq persisted BEFORE anything is sent. RPC retries reuse the id (the
+worker replays its persisted result); a deliberate re-dispatch bumps seq.
+After a timeout the router asks the same worker job.result before ever
+handing the job elsewhere.
 ]]
 
 local class = require("lib.class")
@@ -21,17 +30,13 @@ local util = require("lib.util")
 local Node = require("lib.net")
 local claims = require("lib.claims")
 local InventoryClient = require("lib.clients.inventory")
-local MultiInventoryClient = require("lib.clients.multi_inventory")
-local EntangloporterClient = require("lib.clients.entangloporter")
 
 local Router = class()
 
+local WORKER_ALIVE_MS = 90 * 1000
+
 function Router:init(config, log)
   assert(type(config.name) == "string", "router config needs a 'name'")
-  assert(type(config.devices) == "table", "router config needs a 'devices' table")
-  assert(type(config.ports) == "table" and #config.ports > 0,
-    "router config needs at least one delivery port")
-  assert(type(config.intake_frequency) == "string", "router config needs 'intake_frequency'")
   self.config = config
   self.log = log
   self.node = Node.new({
@@ -40,51 +45,63 @@ function Router:init(config, log)
     modem = config.modem,
     log = log,
   })
-  self.port_locks = {} -- port index -> claim id
+  self.workers = {}       -- computer id -> {name, last_seen}
+  self.worker_rr = 0
+  self.chest_clients = {} -- peripheral name -> InventoryClient
+  self.chest_nags = {}    -- peripheral name -> last unreadable-warning time
+  self.chest_busy = {}    -- source chest -> claim id with a move in flight
+  self.claim_busy = {}    -- claim id -> being handled by a dispatcher
+  self.jobs_inflight = {} -- job id -> true
 end
 
 function Router:setup()
-  local d = self.config.devices
-  -- intake_inventory may be one peripheral name or a list treated as a
-  -- single combined buffer (counts sum; deliveries drain across all of them).
-  self.intake_inventory = MultiInventoryClient.wrap(d.intake_inventory)
-  self.log:info("intake buffer: %s", self.intake_inventory:get_name())
-  self.intake_porter = EntangloporterClient.new(d.intake_porter)
-  self.intake_porter:ensure_frequency(self.config.intake_frequency)
-
-  self.port_porters = {}
-  for i, port in ipairs(self.config.ports) do
-    assert(type(port.inventory) == "string" and type(port.porter) == "string"
-      and type(port.frequency) == "string",
-      "port " .. i .. " needs inventory, porter, and frequency")
-    -- Wrapping validates the chest exists even though only pushItems uses it.
-    InventoryClient.new(port.inventory)
-    self.port_porters[i] = EntangloporterClient.new(port.porter)
-    self.port_porters[i]:ensure_frequency(port.frequency)
-  end
-
   self.ledger = claims.ClaimLedger.new(self.config.data_dir or "/data/claims", self.log)
 
-  -- Reboot recovery: claims that were mid-delivery keep their port locked so
-  -- we don't hand the same lane to someone else.
   for _, c in ipairs(self.ledger:by_status(claims.STATUS.DELIVERING)) do
-    if c.port and self.config.ports[c.port] then
-      self.port_locks[c.port] = c.id
-      self.log:warn("claim %s: resumed mid-delivery on port %d", util.short_id(c.id), c.port)
-    end
+    self.log:warn("claim %s: was mid-delivery before reboot; will reconcile via job.result",
+      util.short_id(c.id))
   end
 
   self.node:open()
   self.node:handle("claim.create", function(body) return self:_on_claim_create(body) end)
   self.node:handle("claim.shipped", function(body) return self:_on_claim_shipped(body) end)
   self.node:handle("claim.abort", function(body) return self:_on_claim_abort(body) end)
-  self.node:handle("delivery.received", function(body) return self:_on_delivery_received(body) end)
   self.node:handle("claim.get", function(body) return self:_on_claim_get(body) end)
   self.node:handle("claim.list", function(body) return self:_on_claim_list(body) end)
+  self.node:handle("worker.register", function(body, ctx) return self:_on_worker_register(body, ctx) end)
   self.node:handle("sys.status", function() return self:_status() end)
 end
 
--- RPC handlers ---------------------------------------------------------------
+-- Chest access -----------------------------------------------------------------
+
+function Router:_chest(name)
+  local client = self.chest_clients[name]
+  if client then return client end
+  local ok, created = pcall(InventoryClient.new, name)
+  if not ok then return nil, created end
+  self.chest_clients[name] = created
+  return created
+end
+
+function Router:_chest_counts(name)
+  local client, err = self:_chest(name)
+  if not client then return nil, err end
+  local ok, counts = pcall(function() return client:counts() end)
+  if not ok then
+    self.chest_clients[name] = nil -- modem replaced? re-wrap next time
+    return nil, counts
+  end
+  return counts
+end
+
+function Router:_nag_chest(name, err)
+  if util.now_ms() - (self.chest_nags[name] or 0) > 30 * 1000 then
+    self.chest_nags[name] = util.now_ms()
+    self.log:warn("cannot read %s (%s); its claims are on hold", name, tostring(err))
+  end
+end
+
+-- RPC handlers -----------------------------------------------------------------
 
 function Router:_get_or_die(claim_id)
   local c = self.ledger:get(claim_id)
@@ -99,8 +116,6 @@ function Router:_on_claim_create(body)
   if type(fields) ~= "table" then
     error({ code = "bad_request", message = "claim fields required" })
   end
-
-  -- Idempotent: a retried create for the same id returns the existing claim.
   local existing = self.ledger:get(fields.id)
   if existing then return { claim = existing } end
 
@@ -110,16 +125,15 @@ function Router:_on_claim_create(body)
   end
 
   self.ledger:save(claim)
-  self.log:info("claim %s: created -- expecting %d x %s for #%d (via %s)",
-    util.short_id(claim.id), claim.amount, claim.item, claim.sender_id,
-    tostring(claim.service))
+  self.log:info("claim %s: created -- expecting %d x %s in %s for #%d",
+    util.short_id(claim.id), claim.amount, claim.item,
+    claim.service_output_chest, claim.sender_id)
   return { claim = claim }
 end
 
 function Router:_on_claim_shipped(body)
   local c = self:_get_or_die(body.claim_id)
   if c.status == claims.STATUS.CREATED then
-    -- The sender reports how much actually shipped; scale the claim to match.
     local shipped = math.floor(tonumber(body.amount) or c.input_amount)
     if shipped > 0 and shipped ~= c.input_amount then
       c.input_amount = shipped
@@ -129,7 +143,6 @@ function Router:_on_claim_shipped(body)
     end
     self.ledger:transition(c, claims.STATUS.IN_TRANSIT)
   end
-  -- Any later status means the notice is a late retry; that's fine.
   return { claim = c }
 end
 
@@ -145,23 +158,7 @@ function Router:_on_claim_abort(body)
   error({ code = "too_late", message = "claim is already " .. c.status })
 end
 
-function Router:_on_delivery_received(body)
-  local c = self:_get_or_die(body.claim_id)
-  if c.status == claims.STATUS.COMPLETED then return { claim = c } end -- idempotent
-  if c.status ~= claims.STATUS.DELIVERING then
-    error({ code = "bad_state", message = "claim is " .. c.status .. ", not delivering" })
-  end
-  c.received = math.floor(tonumber(body.received) or c.amount)
-  self.ledger:transition(c, claims.STATUS.COMPLETED)
-  if c.port then self.port_locks[c.port] = nil end
-  self.log:info("claim %s: completed -- #%d confirmed %d x %s (port %s freed)",
-    util.short_id(c.id), c.sender_id, c.received, c.item, tostring(c.port))
-  return { claim = c }
-end
-
 function Router:_on_claim_get(body)
-  -- Accepts a full id or a unique prefix (the short ids from tools/logs),
-  -- and also finds archived claims -- inspection shouldn't stop at pruning.
   local c, ambiguous = self.ledger:find(tostring(body.claim_id or ""))
   if ambiguous then
     error({ code = "ambiguous", message = "multiple claims match that prefix" })
@@ -187,108 +184,237 @@ function Router:_on_claim_list(body)
     rows[#rows + 1] = {
       id = c.id, status = c.status, item = c.item, amount = c.amount,
       sender_id = c.sender_id, created_at = c.created_at,
-      port = c.port, dispatched = c.dispatched, received = c.received,
+      dispatched = c.dispatched, received = c.received,
+      deliver_seq = c.deliver_seq, deliver_worker = c.deliver_worker,
     }
   end
   return { claims = rows, now = util.now_ms() }
 end
 
--- Intake matching -------------------------------------------------------------
+function Router:_on_worker_register(body, ctx)
+  local known = self.workers[ctx.from]
+  self.workers[ctx.from] = { name = body.name, last_seen = util.now_ms() }
+  if not known then
+    self.log:info("worker '%s' (#%d) joined the pool", tostring(body.name), ctx.from)
+  end
+  return { ok = true }
+end
 
-function Router:_intake_tick()
-  local counts = self.intake_inventory:counts()
+-- Matching ---------------------------------------------------------------------
 
-  -- Goods already earmarked for claims further along must not be counted
-  -- toward claims still waiting.
-  local reserved = {}
-  for _, c in ipairs(self.ledger:by_status(claims.STATUS.ARRIVED, claims.STATUS.DELIVERING)) do
-    if c.status == claims.STATUS.ARRIVED or not c.dispatched then
-      reserved[c.item] = (reserved[c.item] or 0) + c.amount
+function Router:_match_tick()
+  local by_chest = {}
+  for _, c in ipairs(self.ledger:by_status(claims.STATUS.CREATED, claims.STATUS.IN_TRANSIT)) do
+    local chest = c.service_output_chest
+    if type(chest) == "string" then
+      by_chest[chest] = by_chest[chest] or {}
+      table.insert(by_chest[chest], c) -- by_status is oldest-first already
     end
   end
 
-  -- FIFO over open claims. "created" is included deliberately: if the
-  -- sender's shipped-notice was lost, or the intake simply has stock on
-  -- hand, the claim is fulfilled from what's physically there.
-  for _, c in ipairs(self.ledger:by_status(claims.STATUS.CREATED, claims.STATUS.IN_TRANSIT)) do
-    local avail = (counts[c.item] or 0) - (reserved[c.item] or 0)
-    if avail >= c.amount then
-      self.ledger:transition(c, claims.STATUS.ARRIVED)
-      reserved[c.item] = (reserved[c.item] or 0) + c.amount
-      self.log:info("claim %s: %d x %s ready at intake", util.short_id(c.id), c.amount, c.item)
+  -- Goods earmarked by claims further along must not count for new ones.
+  local reserved = {} -- chest -> item -> amount
+  for _, c in ipairs(self.ledger:by_status(claims.STATUS.ARRIVED, claims.STATUS.DELIVERING)) do
+    local chest = c.service_output_chest
+    if chest then
+      local remaining = (c.amount or 0) - (c.dispatched or 0)
+      if remaining > 0 then
+        reserved[chest] = reserved[chest] or {}
+        reserved[chest][c.item] = (reserved[chest][c.item] or 0) + remaining
+      end
+    end
+  end
+
+  for chest, bucket in pairs(by_chest) do
+    local counts, err = self:_chest_counts(chest)
+    if not counts then
+      self:_nag_chest(chest, err)
+    else
+      local r = reserved[chest] or {}
+      for _, c in ipairs(bucket) do
+        local avail = (counts[c.item] or 0) - (r[c.item] or 0)
+        if avail >= c.amount then
+          self.ledger:transition(c, claims.STATUS.ARRIVED)
+          r[c.item] = (r[c.item] or 0) + c.amount
+          self.log:info("claim %s: %d x %s ready in %s",
+            util.short_id(c.id), c.amount, c.item, chest)
+        end
+      end
     end
   end
 end
 
--- Delivery -------------------------------------------------------------------
+-- Delivery dispatch ------------------------------------------------------------
 
-function Router:_free_port()
-  for i = 1, #self.config.ports do
-    if not self.port_locks[i] then return i end
+function Router:_pick_worker()
+  local now = util.now_ms()
+  local ids = {}
+  for id, w in pairs(self.workers) do
+    if now - w.last_seen < WORKER_ALIVE_MS then ids[#ids + 1] = id end
+  end
+  if #ids == 0 then return nil end
+  table.sort(ids)
+  self.worker_rr = self.worker_rr + 1
+  return ids[(self.worker_rr % #ids) + 1]
+end
+
+--- Pick the oldest claim that needs dispatcher attention and mark it busy.
+--- Cooperative scheduling makes check-and-mark atomic within a coroutine.
+function Router:_next_deliverable()
+  local now = util.now_ms()
+  for _, c in ipairs(self.ledger:by_status(claims.STATUS.ARRIVED, claims.STATUS.DELIVERING)) do
+    local src = c.service_output_chest or ""
+    if (c.next_attempt_at or 0) <= now
+        and not self.claim_busy[c.id] and not self.chest_busy[src] then
+      self.claim_busy[c.id] = true
+      return c
+    end
   end
   return nil
 end
 
-function Router:_delivery_tick()
-  for _, c in ipairs(self.ledger:by_status(claims.STATUS.ARRIVED)) do
-    if (c.next_attempt_at or 0) <= util.now_ms() then
-      local port_i = self:_free_port()
-      if not port_i then return end -- every lane busy; try next tick
-      self:_deliver(c, port_i)
-      return -- one delivery per tick keeps the logs legible
-    end
+function Router:_dispatch(c)
+  local src, dst = c.service_output_chest, c.inbox_chest
+  if type(src) ~= "string" or type(dst) ~= "string" then
+    self.log:warn("claim %s: missing chest addresses -- failing it", util.short_id(c.id))
+    self.ledger:transition(c, claims.STATUS.FAILED)
+    return
   end
-end
-
-function Router:_deliver(c, port_i)
-  local port = self.config.ports[port_i]
-
-  -- Negotiate first, lock after: the sender must confirm its inbox porter is
-  -- tuned to this port's frequency before any items move.
-  local ok, _, err = self.node:request(c.sender_id, "delivery.offer", {
-    claim_id = c.id, item = c.item, amount = c.amount, frequency = port.frequency,
-  }, { timeout_s = 3, retries = 2 })
-
-  if not ok then
-    local code = err and err.code or "unknown"
-    c.next_attempt_at = util.now_ms() + (code == "busy" and 5 or 15) * 1000
-    self.ledger:save(c)
-    if code == "busy" then
-      self.log:debug("claim %s: sender #%d busy, retrying shortly", util.short_id(c.id), c.sender_id)
-    else
-      self.log:warn("claim %s: offer to #%d failed (%s), retrying later",
-        util.short_id(c.id), c.sender_id, code)
-    end
+  local remaining = (c.amount or 0) - (c.dispatched or 0)
+  if remaining <= 0 then
+    self:_complete(c)
     return
   end
 
-  self.port_locks[port_i] = c.id
-  c.port = port_i
-  self.ledger:transition(c, claims.STATUS.DELIVERING)
-
-  local moved = self.intake_inventory:push_item(port.inventory, c.item, c.amount)
-  c.dispatched = moved
-  self.ledger:save(c)
-  if moved < c.amount then
-    self.log:warn("claim %s: only %d/%d x %s made it to port %d -- intake shortfall",
-      util.short_id(c.id), moved, c.amount, c.item, port_i)
+  -- Persist the job identity BEFORE sending anything: a rebooted router
+  -- must ask job.result about this id, never re-dispatch blindly.
+  c.deliver_seq = (c.deliver_seq or 0) + 1
+  c.deliver_worker = self:_pick_worker()
+  c.deliver_unresolved = true
+  if c.status == claims.STATUS.ARRIVED then
+    self.ledger:transition(c, claims.STATUS.DELIVERING)
+  else
+    self.ledger:save(c)
   end
 
-  local ok2 = self.node:request(c.sender_id, "delivery.dispatched", {
-    claim_id = c.id, item = c.item, amount = moved, frequency = port.frequency,
-  })
-  if not ok2 then
-    -- Not fatal: the sender watches its inbox from the offer onward and its
-    -- receive timeout will confirm whatever physically arrives.
-    self.log:warn("claim %s: dispatch notice to #%d failed; sender will confirm from its inbox",
-      util.short_id(c.id), c.sender_id)
+  local job_id = c.id .. "-d" .. c.deliver_seq
+  self.chest_busy[src] = c.id
+  self.jobs_inflight[job_id] = true
+
+  local moved, fail_code
+  if c.deliver_worker then
+    local ok, body, err = self.node:request(c.deliver_worker, "move.exec", {
+      from = src, to = dst, item = c.item, amount = remaining,
+    }, { id = job_id, timeout_s = 5, retries = 2 })
+    if ok then moved = body.moved else fail_code = err and err.code or "timeout" end
+  else
+    -- No workers alive: the router is its own worker.
+    local client, cerr = self:_chest(src)
+    if client then
+      local ok, n = pcall(function() return client:push_item(dst, c.item, remaining) end)
+      if ok then moved = n
+      else
+        fail_code = "chest_error"
+        self.chest_clients[src] = nil
+      end
+    else
+      fail_code = "chest_missing"
+      self:_nag_chest(src, cerr)
+    end
   end
 
-  self.log:info("claim %s: dispatched %d x %s to #%d via port %d (%s)",
-    util.short_id(c.id), moved, c.item, c.sender_id, port_i, port.frequency)
+  self.jobs_inflight[job_id] = nil
+  self.chest_busy[src] = nil
+
+  if moved == nil then
+    -- A clean structured refusal means nothing moved; a timeout or a crash
+    -- mid-move leaves the outcome unknown, so keep the unresolved flag and
+    -- let reconciliation query job.result before any re-dispatch.
+    if fail_code == "chest_missing" or fail_code == "bad_request" then
+      c.deliver_unresolved = nil
+    end
+    c.next_attempt_at = util.now_ms() + 10 * 1000
+    self.ledger:save(c)
+    self.log:warn("claim %s: deliver job %s did not finish (%s); will retry",
+      util.short_id(c.id), job_id, tostring(fail_code))
+    return
+  end
+
+  self:_apply_move(c, moved)
 end
 
--- Janitor --------------------------------------------------------------------
+function Router:_reconcile(c)
+  if c.deliver_unresolved then
+    local job_id = c.id .. "-d" .. (c.deliver_seq or 0)
+    if c.deliver_worker then
+      local ok, body, err = self.node:request(c.deliver_worker, "job.result",
+        { job_id = job_id }, { retries = 1, timeout_s = 3 })
+      local w = self.workers[c.deliver_worker]
+      local alive = w and (util.now_ms() - w.last_seen) < WORKER_ALIVE_MS
+      if ok then
+        self:_apply_move(c, body.moved)
+        return
+      elseif err and err.code == "not_found" then
+        c.deliver_unresolved = nil -- the worker never ran it; safe to retry
+        self.ledger:save(c)
+      elseif alive then
+        -- Worker is alive but unreachable this instant; ask again later.
+        c.next_attempt_at = util.now_ms() + 10 * 1000
+        self.ledger:save(c)
+        return
+      else
+        self.log:warn("claim %s: worker #%d vanished with job %s unresolved -- re-dispatching (small double-move risk)",
+          util.short_id(c.id), c.deliver_worker, job_id)
+        c.deliver_unresolved = nil
+        self.ledger:save(c)
+      end
+    else
+      self.log:warn("claim %s: self-executed move was interrupted -- re-dispatching (small double-move risk)",
+        util.short_id(c.id))
+      c.deliver_unresolved = nil
+      self.ledger:save(c)
+    end
+  end
+
+  if (c.amount or 0) - (c.dispatched or 0) > 0 then
+    self:_dispatch(c)
+  else
+    self:_complete(c)
+  end
+end
+
+function Router:_apply_move(c, moved)
+  moved = math.floor(tonumber(moved) or 0)
+  c.dispatched = (c.dispatched or 0) + moved
+  c.deliver_unresolved = nil
+  if c.dispatched >= (c.amount or 0) then
+    self:_complete(c)
+  else
+    -- Partial: the inbox chest was full, or the output raced another claim.
+    c.next_attempt_at = util.now_ms() + (moved > 0 and 5 or 10) * 1000
+    self.ledger:save(c)
+    self.log:info("claim %s: partial delivery %d/%d; will move the remainder",
+      util.short_id(c.id), c.dispatched, c.amount)
+  end
+end
+
+function Router:_complete(c)
+  if c.status == claims.STATUS.ARRIVED then
+    self.ledger:transition(c, claims.STATUS.DELIVERING)
+  end
+  if c.status == claims.STATUS.DELIVERING then
+    c.received = c.dispatched or 0
+    self.ledger:transition(c, claims.STATUS.COMPLETED)
+  end
+  self.log:info("claim %s: delivered %d x %s to #%d",
+    util.short_id(c.id), c.dispatched or 0, c.item, c.sender_id)
+  -- Advisory nudge; the sender's janitor reconciliation is the guarantee.
+  self.node:request(c.sender_id, "delivery.landed", {
+    claim_id = c.id, moved = c.dispatched,
+  }, { retries = 1, timeout_s = 3 })
+end
+
+-- Janitor ----------------------------------------------------------------------
 
 function Router:_janitor_tick()
   local now = util.now_ms()
@@ -299,8 +425,9 @@ function Router:_janitor_tick()
   for _, c in ipairs(self.ledger:by_status(claims.STATUS.CREATED, claims.STATUS.IN_TRANSIT)) do
     if now - c.updated_at > ttl_ms then
       self.ledger:transition(c, claims.STATUS.EXPIRED)
-      self.log:warn("claim %s: expired after %s in %s -- goods may be sitting in intake unclaimed",
-        util.short_id(c.id), util.fmt_age(now - c.created_at), c.status)
+      self.log:warn("claim %s: expired after %s in %s -- goods may be sitting in %s unclaimed",
+        util.short_id(c.id), util.fmt_age(now - c.created_at), c.status,
+        tostring(c.service_output_chest))
     end
   end
 
@@ -308,11 +435,9 @@ function Router:_janitor_tick()
     if now - c.updated_at > stuck_ms and now - (c.last_nag or 0) > 60000 then
       c.last_nag = now
       self.ledger:save(c)
-      -- Deliberately keep the port locked: freeing it would let a new claim
-      -- mix its items into an unconfirmed delivery. A human (or the sender's
-      -- confirm-retry janitor) resolves this.
-      self.log:warn("claim %s: delivery unconfirmed for %s on port %s -- sender #%d asleep?",
-        util.short_id(c.id), util.fmt_age(now - c.updated_at), tostring(c.port), c.sender_id)
+      self.log:warn("claim %s: delivering for %s (%d/%d moved) -- inbox %s full, or chest offline?",
+        util.short_id(c.id), util.fmt_age(now - c.updated_at),
+        c.dispatched or 0, c.amount or 0, tostring(c.inbox_chest))
     end
   end
 
@@ -323,8 +448,15 @@ function Router:_janitor_tick()
     end
   end
 
-  -- Storage hygiene, every ~10 minutes (and once right after boot): prune
-  -- old archived claims and shout before the disk quota strangles writes.
+  -- Forget workers that have been silent for a long while.
+  for id, w in pairs(util.shallow_copy(self.workers)) do
+    if now - w.last_seen > 300 * 1000 then
+      self.workers[id] = nil
+      self.log:warn("worker '%s' (#%d) dropped from the pool (silent 5m)", tostring(w.name), id)
+    end
+  end
+
+  -- Storage hygiene, every ~10 minutes (and once right after boot).
   if now - (self.archive_pruned_at or 0) > 600 * 1000 then
     self.archive_pruned_at = now
     local pruned = self.ledger:prune_archive((self.config.archive_retention_s or 86400) * 1000)
@@ -337,35 +469,29 @@ function Router:_janitor_tick()
         math.floor(free / 1024))
     end
   end
-
-  -- Re-assert static frequencies; a stray GUI click shouldn't derail lanes.
-  self.intake_porter:ensure_frequency(self.config.intake_frequency)
-  for i, porter in ipairs(self.port_porters) do
-    porter:ensure_frequency(self.config.ports[i].frequency)
-  end
 end
 
--- Status & tasks -------------------------------------------------------------
+-- Status & tasks ---------------------------------------------------------------
 
 function Router:_status()
   local by_status = {}
   for _, c in pairs(self.ledger:all()) do
     by_status[c.status] = (by_status[c.status] or 0) + 1
   end
-  local ports = {}
-  for i, port in ipairs(self.config.ports) do
-    ports[i] = {
-      frequency = port.frequency,
-      claim = self.port_locks[i] and util.short_id(self.port_locks[i]) or "free",
-    }
+  local workers = {}
+  local now = util.now_ms()
+  for id, w in pairs(self.workers) do
+    if now - w.last_seen < WORKER_ALIVE_MS then
+      workers[#workers + 1] = { id = id, name = w.name }
+    end
   end
+  table.sort(workers, function(a, b) return a.id < b.id end)
   return {
     role = "router",
     name = self.config.name,
     id = os.getComputerID(),
     claims = by_status,
-    ports = ports,
-    intake = self.intake_inventory:counts(),
+    workers = workers,
   }
 end
 
@@ -380,9 +506,22 @@ function Router:tasks()
       end
     end
   end
-  tasks[#tasks + 1] = loop("intake tick", function() self:_intake_tick() end, self.config.poll_s or 2)
-  tasks[#tasks + 1] = loop("delivery tick", function() self:_delivery_tick() end, self.config.poll_s or 2)
+  tasks[#tasks + 1] = loop("match tick", function() self:_match_tick() end, self.config.poll_s or 2)
   tasks[#tasks + 1] = loop("janitor", function() self:_janitor_tick() end, 15)
+  -- Dispatcher pool: each coroutine handles one claim at a time, so this is
+  -- also the cap on concurrent deliver moves in flight.
+  for i = 1, self.config.dispatchers or 4 do
+    tasks[#tasks + 1] = loop("dispatcher " .. i, function()
+      local c = self:_next_deliverable()
+      if c then
+        local ok, err = pcall(function()
+          if c.status == claims.STATUS.ARRIVED then self:_dispatch(c) else self:_reconcile(c) end
+        end)
+        self.claim_busy[c.id] = nil
+        if not ok then error(err, 0) end
+      end
+    end, 1)
+  end
   return tasks
 end
 
