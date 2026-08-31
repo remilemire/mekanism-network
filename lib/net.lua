@@ -112,13 +112,18 @@ end
 --- Send a request and wait for the matching response.
 --- Retries reuse the same request id, so the far side can deduplicate and
 --- replay. Returns (true, body) or (false, nil, err) with err.code set.
+---
+--- opts.id supplies a stable request id (e.g. a deterministic job id, so a
+--- re-issued job hits the receiver's dedup instead of running twice).
+--- Discipline: never have two requests in flight with the same id -- they
+--- would steal each other's responses.
 function Node:request(target, method, body, opts)
   opts = opts or {}
   local timeout_s = opts.timeout_s or self.request_timeout_s
   local retries = opts.retries
   if retries == nil then retries = self.request_retries end
 
-  local id = util.uuid()
+  local id = opts.id or util.uuid()
   local env = {
     v = 1, kind = "req", id = id, method = method,
     body = body or {}, from = os.getComputerID(),

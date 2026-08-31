@@ -8,9 +8,14 @@ A claim is the router's promise to deliver processed goods back to a sender:
     service = "crusher-1",
     input_item = "minecraft:iron_ingot", input_amount = 72,
     item = "mekanism:dust_iron", amount = 72, ratio = 1,
+    -- physical addresses, snapshotted at creation (wired-network names):
+    service_input_chest = "...",  -- where the sender ships raw goods
+    service_output_chest = "...", -- where processed goods appear
+    inbox_chest = "...",          -- where the delivery lands at the sender
     status = "created", created_at = ..., updated_at = ...,
     history = { {status="created", at=...}, ... },
-    port = 3, dispatched = 72, received = 72,  -- filled in as delivery happens
+    -- delivery bookkeeping, filled in as it happens:
+    dispatched = 72, received = 72, deliver_seq = 1, deliver_worker = 5,
   }
 
 Lifecycle:
@@ -56,6 +61,12 @@ function claims.new(fields)
   assert(type(fields.item) == "string" and #fields.item > 0, "claim.item required")
   local amount = math.floor(tonumber(fields.amount) or 0)
   assert(amount > 0, "claim.amount must be a positive number")
+  -- Without these two addresses the claim can never be delivered; refuse it
+  -- up front rather than letting it rot at the router.
+  assert(type(fields.service_output_chest) == "string" and #fields.service_output_chest > 0,
+    "claim.service_output_chest required")
+  assert(type(fields.inbox_chest) == "string" and #fields.inbox_chest > 0,
+    "claim.inbox_chest required")
 
   local now = util.now_ms()
   return {
@@ -67,6 +78,9 @@ function claims.new(fields)
     item = fields.item,
     amount = amount,
     ratio = tonumber(fields.ratio) or 1,
+    service_input_chest = fields.service_input_chest,
+    service_output_chest = fields.service_output_chest,
+    inbox_chest = fields.inbox_chest,
     status = claims.STATUS.CREATED,
     created_at = now,
     updated_at = now,
