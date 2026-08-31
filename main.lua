@@ -16,6 +16,7 @@ local ROLE_MODULES = {
   sender = "roles.sender",
   service = "roles.service",
   router = "roles.router",
+  worker = "roles.worker",
 }
 
 local config_path = fs.combine(root, "config.lua")
@@ -37,7 +38,7 @@ if not ok or type(config) ~= "table" then
   return
 end
 if not ROLE_MODULES[config.role] then
-  printError(("unknown role %q -- expected one of: sender, service, router")
+  printError(("unknown role %q -- expected one of: sender, service, router, worker")
     :format(tostring(config.role)))
   return
 end
