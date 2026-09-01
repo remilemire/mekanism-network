@@ -70,10 +70,13 @@ function Node:open()
         :format(self.modem_name, table.concat(peripheral.getNames(), ", ")), 0)
     end
   else
-    modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
+    -- Prefer the wired modem: everything (peripherals AND rednet) rides the
+    -- one cable network. A leftover wireless modem must not win here -- it
+    -- would host this node where wired-only peers can't reach it.
+    modem = peripheral.find("modem", function(_, m) return not m.isWireless() end)
         or peripheral.find("modem")
     if not modem then
-      error("no modem attached -- this computer needs a (preferably wireless) modem", 0)
+      error("no modem attached -- this computer needs a wired modem onto the shared network", 0)
     end
   end
 

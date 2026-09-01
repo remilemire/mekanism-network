@@ -2,19 +2,23 @@
 
 The crushing service is just this role with crushing recipes in its config;
 an enriching or smelting service is the same code with different recipes.
-The machines themselves are passive: raw goods land in the input chest
-(pushed there by the sender over the shared wired network), flow through
-the factory via your local plumbing, and end up in the output chest, where
-the router's matcher spots them and dispatches delivery moves.
+Raw goods land in the input chest (pushed there by the sender), flow
+through the factory via your local plumbing, and end up in the output
+chest.
 
-The computer's job is bookkeeping: translate "crush my iron ingots" into a
-claim for iron dust and register that claim -- with the physical chest
-addresses baked in -- at the router.
+Under the ownership model this computer is also the delivery arm for its
+own output chest: the router commands `deliver.exec` and the SERVICE
+pushes the goods into the ordering sender's inbox -- nothing on the
+network ever pulls from a chest it doesn't own. Job results persist by
+job id so retries replay instead of double-moving, and `job.result` lets
+the router reconcile unknown outcomes (including "interrupted": we
+rebooted after marking a job running but before recording its result).
 ]]
 
 local class = require("lib.class")
 local util = require("lib.util")
 local Node = require("lib.net")
+local JsonStore = require("lib.store")
 local InventoryClient = require("lib.clients.inventory")
 local MachineClient = require("lib.clients.machine")
 
@@ -35,7 +39,9 @@ function Service:init(config, log)
     modem = config.modem,
     log = log,
   })
+  self.results = JsonStore.new(config.data_dir or "/data/service")
   self.handled = 0
+  self.delivered = 0
 end
 
 function Service:setup()
@@ -50,7 +56,56 @@ function Service:setup()
 
   self.node:open()
   self.node:handle("service.request", function(body, ctx) return self:_on_request(body, ctx) end)
+  self.node:handle("deliver.exec", function(body, ctx) return self:_on_deliver(body, ctx) end)
+  self.node:handle("job.result", function(body) return self:_on_job_result(body) end)
   self.node:handle("sys.status", function() return self:_status() end)
+end
+
+--- Execute one delivery: push goods from OUR output chest into the given
+--- inbox. The body carries no authority over the source -- ownership means
+--- this computer only ever moves items out of its own chests.
+function Service:_on_deliver(body, ctx)
+  -- Replay first: a duplicate job id must never move items twice.
+  local done = self.results:get(ctx.id)
+  if done and done.status == "done" then
+    return { moved = done.moved, replayed = true }
+  end
+
+  if type(body.to) ~= "string" or type(body.item) ~= "string" then
+    error({ code = "bad_request", message = "need to and item" })
+  end
+  local amount = math.floor(tonumber(body.amount) or 0)
+  if amount <= 0 then
+    error({ code = "bad_request", message = "amount must be positive" })
+  end
+  if not peripheral.isPresent(body.to) then
+    error({ code = "chest_missing", message = body.to .. " is not on this network" })
+  end
+
+  -- Mark the job running before touching items: if we reboot mid-push,
+  -- job.result answers "interrupted" and the router warns loudly instead
+  -- of silently re-dispatching a move that may have happened.
+  self.results:put(ctx.id, { status = "running", at = util.now_ms() })
+  local moved = self.output_chest:push_item(body.to, body.item, amount)
+  self.results:put(ctx.id, { status = "done", moved = moved, at = util.now_ms() })
+
+  self.delivered = self.delivered + moved
+  self.log:info("job %s: delivered %d x %s -> %s", tostring(ctx.id), moved, body.item, body.to)
+  return { moved = moved }
+end
+
+function Service:_on_job_result(body)
+  local done = self.results:get(tostring(body.job_id or ""))
+  if not done then
+    error({ code = "not_found", message = "no result for that job" })
+  end
+  -- A "running" record can only be observed after a reboot: job.result
+  -- queues behind the job itself on this node's serial handler loop, so a
+  -- still-executing job would have finished before we answered.
+  if done.status ~= "done" then
+    error({ code = "interrupted", message = "job was interrupted mid-move" })
+  end
+  return { moved = done.moved, at = done.at }
 end
 
 function Service:_on_request(body, ctx)
@@ -87,7 +142,10 @@ function Service:_on_request(body, ctx)
     inbox_chest = body.inbox_chest,
   }
 
-  local ok, res, err = self.node:request(self.router, "claim.create", { claim = fields })
+  -- Fewer retries than default: this runs on the serial handler loop, and
+  -- a long stall here delays queued deliver.exec jobs behind it.
+  local ok, res, err = self.node:request(self.router, "claim.create",
+    { claim = fields }, { retries = 2 })
   if not ok then
     error({
       code = "router_unavailable",
@@ -116,6 +174,7 @@ function Service:_status()
     name = self.config.name,
     id = os.getComputerID(),
     requests_handled = self.handled,
+    items_delivered = self.delivered,
     recipes = recipes,
     input_chest = self.config.devices.input_chest,
     output_chest = self.config.devices.output_chest,
@@ -126,7 +185,22 @@ function Service:_status()
 end
 
 function Service:tasks()
-  return self.node:tasks()
+  local tasks = self.node:tasks()
+  -- Job results only matter while the router might still ask about them.
+  tasks[#tasks + 1] = function()
+    while true do
+      sleep(300)
+      local ok, err = pcall(function()
+        local cutoff = util.now_ms() - (self.config.result_retention_s or 3600) * 1000
+        for _, id in ipairs(self.results:ids()) do
+          local r = self.results:get(id)
+          if not r or (r.at or 0) < cutoff then self.results:delete(id) end
+        end
+      end)
+      if not ok then self.log:error("result pruning failed: %s", tostring(err)) end
+    end
+  end
+  return tasks
 end
 
 return Service
