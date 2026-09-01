@@ -1,13 +1,13 @@
---[[ Crushing service ("computer B"). The `service` role is generic -- this
-config is what makes it a crusher. An enrichment or infusing service later
-is this same file with a new name, its own chests, and its recipes.
+--[[ Crushing service. The `service` role is generic -- this config is what
+makes it a crusher. An enrichment or infusing service later is this same
+file with a new name, its own chests, and its recipes. Since v4 each
+service is also the broker for its own claims (there is no router).
 Copy to config.lua next to main.lua on the service computer. ]]
 
 return {
   role = "service",
   name = "crusher-1", -- rednet hostname; senders route to this name
   protocol = "mekanet",
-  router_host = "router",
   -- modem = "back",
 
   devices = {
@@ -26,5 +26,12 @@ return {
     -- ["minecraft:cobblestone"] = { output = "minecraft:gravel", ratio = 1 },
   },
 
+  claim_ttl_s = 900,   -- expire claims whose goods never show up
+  stuck_after_s = 300, -- nag about deliveries that can't finish
+  retention_s = 3600,  -- archive finished claims after this long
+  poll_s = 2,          -- output chest matching interval
+  data_dir = "/data/claims",
+  -- archive_retention_s = 86400, -- delete archived claims after this long
+  --                                 (the disk quota is ~1MB; never keep forever)
   -- log = { level = "debug" },
 }

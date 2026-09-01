@@ -15,7 +15,6 @@ math.randomseed((os.epoch("utc") % 2 ^ 31) + os.getComputerID() * 7919)
 local ROLE_MODULES = {
   sender = "roles.sender",
   service = "roles.service",
-  router = "roles.router",
 }
 
 local config_path = fs.combine(root, "config.lua")
@@ -37,7 +36,7 @@ if not ok or type(config) ~= "table" then
   return
 end
 if not ROLE_MODULES[config.role] then
-  printError(("unknown role %q -- expected one of: sender, service, router")
+  printError(("unknown role %q -- expected one of: sender, service")
     :format(tostring(config.role)))
   return
 end

@@ -213,7 +213,7 @@ end
 
 --- Push outbox contents onward to each item's service input chest. Safe
 --- under multi-claim commingling: every item maps to exactly one service
---- (invert_routes enforces it) and the router credits arrivals FIFO, so
+--- (invert_routes enforces it) and the service credits arrivals FIFO, so
 --- totals staged == totals destined regardless of whose items move first.
 function Sender:_push_outbox()
   if self.outbox_busy then return end
@@ -259,7 +259,7 @@ end
 
 -- Receiving --------------------------------------------------------------------
 
---- Advisory fast path: the router says the goods are in our inbox chest.
+--- Advisory fast path: a service says the goods are in our inbox chest.
 function Sender:_on_landed(body)
   local entry = self.ledger:get(body.claim_id)
   if entry then

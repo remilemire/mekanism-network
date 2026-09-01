@@ -7,7 +7,6 @@ return {
   role = "sender",
   name = "fission-sender-1", -- unique rednet hostname for this computer
   protocol = "mekanet",      -- must match every other computer
-  router_host = "router",
   -- modem = "back",         -- optional: force a specific modem for rednet
 
   devices = {
