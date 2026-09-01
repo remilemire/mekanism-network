@@ -8,12 +8,12 @@ model: this computer only ever pushes items OUT of chests it owns.
   outbox -> service input chest (transport; janitor retries leftovers)
   inbox -> result chest         (drain; the inbox is the incoming audit point)
 
-Deliveries are pushed INTO the inbox by the owning service on the router's
-command -- this sender never reaches into anyone else's chest. There is no
-arrival-counting machinery: pushItems return values make every transfer
-transactional, and the router tracks delivered amounts authoritatively.
-delivery.landed notifications are a fast-path nudge; the janitor's
-claim.get reconciliation is the guarantee.
+Deliveries are pushed INTO the inbox by the owning service -- this sender
+never reaches into anyone else's chest. There is no router (v4): claims
+live at the service that accepted them, so all bookkeeping RPCs go
+straight to services. delivery.landed notifications are a fast-path
+nudge; the janitor's per-service claim.get reconciliation is the
+guarantee.
 
 Local state:
   * a persistent ledger (one JSON per order) so reboots don't lose track
@@ -40,7 +40,6 @@ function Sender:init(config, log)
     "sender config needs devices.inbox_inventory (deliveries land there)")
   self.config = config
   self.log = log
-  self.router = config.router_host or "router"
   self.node = Node.new({
     protocol = config.protocol,
     hostname = config.name,
@@ -99,8 +98,10 @@ function Sender:_resume()
       entry.updated_at = util.now_ms()
       self.ledger:put(id, entry)
       self.active[id] = entry.input_item
-      self.node:request(self.router, "claim.shipped",
-        { claim_id = id, amount = entry.requested }, { retries = 1 })
+      if entry.service then
+        self.node:request(entry.service, "claim.shipped",
+          { claim_id = id, amount = entry.requested }, { retries = 1 })
+      end
       self.log:warn("claim %s: rebooted mid-staging; reported %d as an upper bound",
         util.short_id(id), entry.requested or 0)
     end
@@ -151,9 +152,11 @@ function Sender:_place_order(item, service, amount)
   end
 
   -- Ledger BEFORE moving anything: a reboot mid-staging must know this
-  -- claim may have committed goods (see _resume).
+  -- claim may have committed goods (see _resume). The service hostname is
+  -- recorded because that's where every later question about it goes.
   self.ledger:put(claim.id, {
     claim_id = claim.id,
+    service = service,
     input_item = item,
     output_item = claim.item,
     requested = claim.input_amount,
@@ -176,17 +179,17 @@ function Sender:_place_order(item, service, amount)
   if staged == 0 then
     self.log:warn("claim %s: could not stage any %s (buffer empty, or outbox full?) -- aborting",
       util.short_id(claim.id), item)
-    self.node:request(self.router, "claim.abort", {
+    self.node:request(service, "claim.abort", {
       claim_id = claim.id, reason = "nothing_to_ship",
     })
     self.active[claim.id] = nil
     return
   end
 
-  -- The staged amount IS the commitment the router scales the claim to.
-  -- Not fatal if lost: the janitor re-sends it, and the router promotes
-  -- claims when goods physically reach the service output chest.
-  local ok2, _, err2 = self.node:request(self.router, "claim.shipped", {
+  -- The staged amount IS the commitment the service scales the claim to.
+  -- Not fatal if lost: the janitor re-sends it, and the service promotes
+  -- claims when goods physically reach its output chest.
+  local ok2, _, err2 = self.node:request(service, "claim.shipped", {
     claim_id = claim.id, amount = staged,
   })
   if not ok2 then
@@ -315,43 +318,51 @@ function Sender:_janitor_tick()
     end
   end
 
-  -- Reconcile with the router. landed notices are advisory; this loop is
-  -- what guarantees order slots free up and lost messages heal.
+  -- Reconcile with each claim's service. landed notices are advisory; this
+  -- loop is what guarantees order slots free up and lost messages heal.
   for id, item in pairs(util.shallow_copy(self.active)) do
     local entry = self.ledger:get(id)
-    local ok, body, err = self.node:request(self.router, "claim.get",
-      { claim_id = id }, { retries = 1 })
-    if ok and body.claim then
-      local s = body.claim.status
-      if s == "completed" then
+    local host = entry and entry.service
+    if not host then
+      -- Pre-v4 or corrupted entry: nowhere to ask, so free the slot.
+      self.log:warn("claim %s (%s) has no recorded service -- freeing the order slot",
+        util.short_id(id), tostring(item))
+      self.active[id] = nil
+    else
+      local ok, body, err = self.node:request(host, "claim.get",
+        { claim_id = id }, { retries = 1 })
+      if ok and body.claim then
+        local s = body.claim.status
+        if s == "completed" then
+          if entry then
+            entry.status = "completed"
+            entry.received = body.claim.received
+            entry.updated_at = now
+            self.ledger:put(id, entry)
+          end
+          self.active[id] = nil
+        elseif s == "failed" or s == "expired" then
+          self.log:warn("claim %s (%s) ended as %s at %s -- freeing the order slot",
+            util.short_id(id), tostring(item), s, host)
+          if entry then
+            entry.status = "failed"
+            entry.updated_at = now
+            self.ledger:put(id, entry)
+          end
+          self.active[id] = nil
+        elseif s == "created" and entry and entry.status == "shipped" then
+          -- Our shipped notice was lost; re-send so the claim scales/advances.
+          self.node:request(host, "claim.shipped",
+            { claim_id = id, amount = entry.staged or entry.moved }, { retries = 1 })
+        end
+      elseif not ok and err and err.code == "not_found" then
+        -- The service archived it, meaning it finished a while ago.
+        self.active[id] = nil
         if entry then
           entry.status = "completed"
-          entry.received = body.claim.received
           entry.updated_at = now
           self.ledger:put(id, entry)
         end
-        self.active[id] = nil
-      elseif s == "failed" or s == "expired" then
-        self.log:warn("claim %s (%s) ended as %s at the router -- freeing the order slot",
-          util.short_id(id), tostring(item), s)
-        if entry then
-          entry.status = "failed"
-          entry.updated_at = now
-          self.ledger:put(id, entry)
-        end
-        self.active[id] = nil
-      elseif s == "created" and entry and entry.status == "shipped" then
-        -- Our shipped notice was lost; re-send so the claim scales/advances.
-        self.node:request(self.router, "claim.shipped",
-          { claim_id = id, amount = entry.staged or entry.moved }, { retries = 1 })
-      end
-    elseif not ok and err and err.code == "not_found" then
-      -- Router archived it, meaning it finished a while ago.
-      self.active[id] = nil
-      if entry then
-        entry.status = "completed"
-        entry.updated_at = now
-        self.ledger:put(id, entry)
       end
     end
   end
