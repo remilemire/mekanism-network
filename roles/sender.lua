@@ -1,19 +1,24 @@
 --[[ roles/sender.lua -- "computer A".
 
 Watches an input buffer for items that have a configured route, orders
-processing from the matching service, and ships the raw goods itself: one
-pushItems hop over the shared wired network straight into the service's
-input chest. Deliveries land in this sender's inbox chest (moved there by
-the router's workers); the sender's only receiving duty is trickling the
-inbox onward into the result chest, which your machines may drain freely.
+processing from the matching service, and moves goods under the ownership
+model: this computer only ever pushes items OUT of chests it owns.
 
-There is no arrival-counting machinery any more -- pushItems return values
-made every transfer transactional, and the router tracks delivered amounts
-authoritatively. delivery.landed notifications are a fast-path nudge; the
-janitor's claim.get reconciliation is the guarantee.
+  input buffer -> outbox        (stage: the commitment + outgoing audit point)
+  outbox -> service input chest (transport; janitor retries leftovers)
+  inbox -> result chest         (drain; the inbox is the incoming audit point)
+
+Deliveries are pushed INTO the inbox by the owning service on the router's
+command -- this sender never reaches into anyone else's chest. There is no
+arrival-counting machinery: pushItems return values make every transfer
+transactional, and the router tracks delivered amounts authoritatively.
+delivery.landed notifications are a fast-path nudge; the janitor's
+claim.get reconciliation is the guarantee.
 
 Local state:
   * a persistent ledger (one JSON per order) so reboots don't lose track
+  * a persistent service -> input chest cache, so outbox leftovers stay
+    shippable long after the claims that staged them are forgotten
   * self.active[claim_id] = input item -- in-flight orders; up to
     batch.max_inflight claims per item type may be outstanding at once
 ]]
@@ -29,6 +34,8 @@ local Sender = class()
 function Sender:init(config, log)
   assert(type(config.name) == "string", "sender config needs a unique 'name'")
   assert(type(config.devices) == "table", "sender config needs a 'devices' table")
+  assert(type(config.devices.outbox_inventory) == "string",
+    "sender config needs devices.outbox_inventory (outgoing staging chest)")
   assert(type(config.devices.inbox_inventory) == "string",
     "sender config needs devices.inbox_inventory (deliveries land there)")
   self.config = config
@@ -40,7 +47,10 @@ function Sender:init(config, log)
     modem = config.modem,
     log = log,
   })
-  self.ledger = JsonStore.new(config.data_dir or "/data/sender")
+  local data_dir = config.data_dir or "/data/sender"
+  self.ledger = JsonStore.new(data_dir)
+  self.chest_store = JsonStore.new(fs.combine(data_dir, "chests"))
+  self.service_chests = {} -- service hostname -> input chest name
   -- Config routes are service -> {items}; invert to item -> service for the
   -- order loop. Errors here (duplicate items) surface before anything runs.
   self.item_routes = util.invert_routes(config.routes)
@@ -50,17 +60,24 @@ end
 function Sender:setup()
   local d = self.config.devices
   self.input_buffer = InventoryClient.new(d.input_buffer)
+  self.outbox_inventory = InventoryClient.new(d.outbox_inventory)
   self.inbox_inventory = InventoryClient.new(d.inbox_inventory)
   self.result_inventory = InventoryClient.new(d.result_inventory)
+
+  for service, entry in pairs(self.chest_store:all(self.log)) do
+    self.service_chests[service] = entry.input_chest
+  end
 
   self.node:open()
 
   self.node:handle("delivery.landed", function(body) return self:_on_landed(body) end)
   self.node:handle("sys.status", function() return self:_status() end)
 
-  -- Anything in the inbox is from an already-settled delivery; hand it on.
+  -- Anything in the inbox is from an already-settled delivery; anything in
+  -- the outbox is committed goods still awaiting transport.
   self:_drain_inbox()
   self:_resume()
+  self:_push_outbox()
 end
 
 -- Boot recovery ----------------------------------------------------------------
@@ -69,8 +86,23 @@ function Sender:_resume()
   for id, entry in pairs(self.ledger:all(self.log)) do
     if entry.status == "shipped" then
       self.active[id] = entry.input_item
-      self.log:warn("resuming claim %s: %s shipped before reboot, delivery pending",
+      self.log:warn("resuming claim %s: %s staged before reboot, delivery pending",
         util.short_id(id), tostring(entry.input_item))
+    elseif entry.status == "staging" then
+      -- Rebooted mid-staging: how much reached the outbox is unknowable
+      -- (it commingles with other claims' goods). Report the requested
+      -- amount as an upper bound; a shortfall just means the claim waits
+      -- and expires while its goods recycle into service stock.
+      entry.status = "shipped"
+      entry.staged = entry.requested
+      entry.moved = entry.requested
+      entry.updated_at = util.now_ms()
+      self.ledger:put(id, entry)
+      self.active[id] = entry.input_item
+      self.node:request(self.router, "claim.shipped",
+        { claim_id = id, amount = entry.requested }, { retries = 1 })
+      self.log:warn("claim %s: rebooted mid-staging; reported %d as an upper bound",
+        util.short_id(id), entry.requested or 0)
     end
   end
 end
@@ -111,51 +143,115 @@ function Sender:_place_order(item, service, amount)
   end
   local claim = body.claim
 
-  -- Ship straight into the service's input chest over the wired network.
-  local moved, push_err = 0, nil
-  local pushed = pcall(function()
-    moved = self.input_buffer:push_item(body.input_chest, item, claim.input_amount)
-  end)
-  if not pushed then
-    self.log:warn("claim %s: cannot reach %s -- aborting",
-      util.short_id(claim.id), tostring(body.input_chest))
-    self.node:request(self.router, "claim.abort", {
-      claim_id = claim.id, reason = "ship_failed",
-    })
-    return
+  -- Remember where this service receives goods: the janitor needs it to
+  -- re-push outbox leftovers long after this claim is forgotten.
+  if type(body.input_chest) == "string" and self.service_chests[service] ~= body.input_chest then
+    self.service_chests[service] = body.input_chest
+    self.chest_store:put(service, { input_chest = body.input_chest })
   end
-  if moved == 0 then
-    self.log:warn("claim %s: could not move any %s (buffer empty, or %s full?) -- aborting",
-      util.short_id(claim.id), item, tostring(body.input_chest))
+
+  -- Ledger BEFORE moving anything: a reboot mid-staging must know this
+  -- claim may have committed goods (see _resume).
+  self.ledger:put(claim.id, {
+    claim_id = claim.id,
+    input_item = item,
+    output_item = claim.item,
+    requested = claim.input_amount,
+    status = "staging",
+    updated_at = util.now_ms(),
+  })
+  self.active[claim.id] = item
+
+  -- Stage: commit goods into our outbox, the outgoing verification point.
+  local staged = self.input_buffer:push_item(self.outbox_inventory:get_name(), item, claim.input_amount)
+
+  local entry = self.ledger:get(claim.id) or { claim_id = claim.id, input_item = item }
+  entry.staged = staged
+  entry.moved = staged
+  entry.amount = math.floor(staged * (claim.ratio or 1))
+  entry.status = staged > 0 and "shipped" or "failed"
+  entry.updated_at = util.now_ms()
+  self.ledger:put(claim.id, entry)
+
+  if staged == 0 then
+    self.log:warn("claim %s: could not stage any %s (buffer empty, or outbox full?) -- aborting",
+      util.short_id(claim.id), item)
     self.node:request(self.router, "claim.abort", {
       claim_id = claim.id, reason = "nothing_to_ship",
     })
+    self.active[claim.id] = nil
     return
   end
 
-  -- Tell the router how much actually shipped so it can scale the claim.
+  -- The staged amount IS the commitment the router scales the claim to.
   -- Not fatal if lost: the janitor re-sends it, and the router promotes
-  -- claims when goods physically show up in the service output chest.
+  -- claims when goods physically reach the service output chest.
   local ok2, _, err2 = self.node:request(self.router, "claim.shipped", {
-    claim_id = claim.id, amount = moved,
+    claim_id = claim.id, amount = staged,
   })
   if not ok2 then
     self.log:warn("claim %s: shipped notice failed (%s); janitor will re-send",
       util.short_id(claim.id), err2 and err2.code or "?")
   end
+  self.log:info("claim %s: staged %d x %s", util.short_id(claim.id), staged, item)
 
-  self.ledger:put(claim.id, {
-    claim_id = claim.id,
-    input_item = item,
-    output_item = claim.item,
-    amount = math.floor(moved * (claim.ratio or 1)),
-    moved = moved,
-    status = "shipped",
-    updated_at = util.now_ms(),
-  })
-  self.active[claim.id] = item
-  self.log:info("claim %s: shipped %d x %s to %s",
-    util.short_id(claim.id), moved, item, body.input_chest)
+  -- Best-effort transport now; the janitor retries whatever stays behind.
+  self:_push_outbox()
+end
+
+-- Transport --------------------------------------------------------------------
+
+function Sender:_outbox_warn(msg)
+  if util.now_ms() - (self.outbox_warn_at or 0) > 30000 then
+    self.outbox_warn_at = util.now_ms()
+    self.log:warn("outbox: %s", msg)
+  end
+end
+
+--- Push outbox contents onward to each item's service input chest. Safe
+--- under multi-claim commingling: every item maps to exactly one service
+--- (invert_routes enforces it) and the router credits arrivals FIFO, so
+--- totals staged == totals destined regardless of whose items move first.
+function Sender:_push_outbox()
+  if self.outbox_busy then return end
+  self.outbox_busy = true
+  local ok, err = pcall(function() self:_push_outbox_inner() end)
+  self.outbox_busy = false
+  if not ok then error(err, 0) end
+end
+
+function Sender:_push_outbox_inner()
+  for item, n in pairs(self.outbox_inventory:counts()) do
+    local service = self.item_routes[item]
+    local dest = service and self.service_chests[service]
+    if dest then
+      local ok, err = pcall(function()
+        self.outbox_inventory:push_item(dest, item, n)
+      end)
+      if not ok then
+        self:_outbox_warn(("cannot reach %s (%s)"):format(dest, tostring(err)))
+      end
+    elseif service then
+      self:_outbox_warn(("no known input chest for %s yet"):format(service))
+    else
+      self:_outbox_warn(("%s has no route and is stuck"):format(item))
+    end
+  end
+
+  local left = 0
+  for _, n in pairs(self.outbox_inventory:counts()) do left = left + n end
+  if left == 0 then
+    self.outbox_stuck_since = nil
+    self.outbox_nag_at = nil
+  else
+    self.outbox_stuck_since = self.outbox_stuck_since or util.now_ms()
+    if util.now_ms() - self.outbox_stuck_since > 60000
+        and util.now_ms() - (self.outbox_nag_at or 0) > 60000 then
+      self.outbox_nag_at = util.now_ms()
+      self.log:warn("%d items waiting in the outbox for %s -- service input chest full or unreachable?",
+        left, util.fmt_age(util.now_ms() - self.outbox_stuck_since))
+    end
+  end
 end
 
 -- Receiving --------------------------------------------------------------------
@@ -177,9 +273,8 @@ function Sender:_on_landed(body)
 end
 
 --- Hand everything in the inbox chest onward to the result inventory. The
---- inbox is the delivery landing pad (workers push here so a full result
---- chest can't stall a delivery); the result chest is what your machines
---- may freely drain.
+--- inbox is the incoming audit point (only deliveries land there); the
+--- result chest is what your machines may freely drain.
 function Sender:_drain_inbox()
   local moved = 0
   for item, n in pairs(self.inbox_inventory:counts()) do
@@ -211,6 +306,7 @@ function Sender:_janitor_tick()
   local now = util.now_ms()
 
   self:_drain_inbox()
+  self:_push_outbox()
 
   for id, entry in pairs(self.ledger:all()) do
     if (entry.status == "completed" or entry.status == "failed")
@@ -247,7 +343,7 @@ function Sender:_janitor_tick()
       elseif s == "created" and entry and entry.status == "shipped" then
         -- Our shipped notice was lost; re-send so the claim scales/advances.
         self.node:request(self.router, "claim.shipped",
-          { claim_id = id, amount = entry.moved }, { retries = 1 })
+          { claim_id = id, amount = entry.staged or entry.moved }, { retries = 1 })
       end
     elseif not ok and err and err.code == "not_found" then
       -- Router archived it, meaning it finished a while ago.
@@ -270,6 +366,7 @@ function Sender:_status()
     id = os.getComputerID(),
     active_orders = self.active,
     input_buffer = self.input_buffer:counts(),
+    outbox = self.outbox_inventory:counts(),
     inbox_buffer = self.inbox_inventory:counts(),
   }
 end
