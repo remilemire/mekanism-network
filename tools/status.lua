@@ -46,10 +46,13 @@ local function render_router(body)
   end
   line(table.unpack(segs))
 
-  local names = {}
-  for _, w in ipairs(body.workers or {}) do names[#names + 1] = tostring(w.name) end
-  line(colors.gray, "  workers: ", #names > 0 and colors.white or colors.lightGray,
-    #names == 0 and "none (self-moving)" or (#names .. " (" .. table.concat(names, ", ") .. ")"))
+  local parts = {}
+  for service, n in pairs(body.services or {}) do
+    parts[#parts + 1] = service .. ": " .. n
+  end
+  table.sort(parts)
+  line(colors.gray, "  queues: ", #parts > 0 and colors.white or colors.lightGray,
+    #parts == 0 and "empty" or table.concat(parts, ", "))
 end
 
 local function render_service(body)
@@ -58,13 +61,6 @@ local function render_service(body)
   line(colors.gray, "  output: ", colors.white, fmt_counts(body.output))
 end
 
-local function render_worker(body)
-  line(colors.gray, "  jobs done: ", colors.white, tostring(body.jobs_done or 0))
-  if body.last_job then
-    line(colors.gray, "  last: ", colors.white, ("%d %s -> %s"):format(
-      body.last_job.moved or 0, short_item(body.last_job.item), tostring(body.last_job.to)))
-  end
-end
 
 local function render_sender(body)
   local per_item = {}
@@ -76,6 +72,9 @@ local function render_sender(body)
   line(colors.gray, "  orders: ", #parts > 0 and colors.yellow or colors.lightGray,
     #parts == 0 and "none" or table.concat(parts, ", "))
   line(colors.gray, "  buffer: ", colors.white, fmt_counts(body.input_buffer))
+  if count_keys(body.outbox) > 0 then
+    line(colors.gray, "  outbox: ", colors.yellow, fmt_counts(body.outbox))
+  end
   if count_keys(body.inbox_buffer) > 0 then
     line(colors.gray, "  inbox:  ", colors.yellow, fmt_counts(body.inbox_buffer))
   end
@@ -85,7 +84,6 @@ local RENDERERS = {
   router = render_router,
   service = render_service,
   sender = render_sender,
-  worker = render_worker,
 }
 
 local function render_node(id, body)

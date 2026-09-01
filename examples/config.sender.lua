@@ -11,8 +11,11 @@ return {
   -- modem = "back",         -- optional: force a specific modem for rednet
 
   devices = {
-    -- All three must be on the shared wired network (activated wired modems).
+    -- All four must be on the shared wired network (activated wired modems).
     input_buffer = "minecraft:barrel_0",     -- items needing processing
+    outbox_inventory = "minecraft:barrel_1", -- outgoing staging: everything
+                                             -- committed to an order passes
+                                             -- through here (your audit point)
     inbox_inventory = "minecraft:barrel_3",  -- deliveries land here; do NOT
                                              -- pipe out of it -- the computer
                                              -- moves items on itself

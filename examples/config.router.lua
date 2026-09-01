@@ -1,7 +1,7 @@
 --[[ Router ("computer C"): claim broker and delivery dispatcher. Owns no
-chests of its own -- it matches claims in service output chests and hands
-delivery moves to workers (or executes them itself when no workers are
-online). Copy to config.lua next to main.lua on the router computer. ]]
+chests and moves no items -- it matches claims in service output chests
+(read-only) and commands the owning service to deliver. Copy to config.lua
+next to main.lua on the router computer. ]]
 
 return {
   role = "router",
@@ -9,7 +9,8 @@ return {
   protocol = "mekanet",
   -- modem = "back",
 
-  dispatchers = 4,     -- max concurrent delivery moves in flight
+  dispatchers = 4,     -- max concurrent deliver commands (across services;
+                       -- each service executes one move at a time anyway)
   claim_ttl_s = 900,   -- expire claims whose goods never show up
   stuck_after_s = 300, -- nag about deliveries that can't finish
   retention_s = 3600,  -- archive finished claims after this long

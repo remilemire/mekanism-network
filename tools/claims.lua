@@ -1,19 +1,21 @@
---[[ tools/claims.lua -- inspect the router's claim ledger.
+--[[ tools/claims.lua -- inspect (and rescue) the router's claim ledger.
 
   tools/claims.lua                  -- newest 50 claims, any status
   tools/claims.lua failed           -- filter by status
   tools/claims.lua show 1a022378    -- full detail for one claim (id prefix ok)
+  tools/claims.lua abort 1a022378   -- operator escape hatch: fail a claim
+                                       (its goods recycle into service stock)
   (append a router hostname as the last argument if it isn't "router")
 ]]
 
 local args = { ... }
-local mode, status_filter, show_target, router_host
-if args[1] == "show" then
-  mode = "show"
-  show_target = args[2]
+local mode, status_filter, target, router_host
+if args[1] == "show" or args[1] == "abort" then
+  mode = args[1]
+  target = args[2]
   router_host = args[3] or "router"
-  if not show_target then
-    printError("usage: claims show <claim-id-or-prefix> [router-host]")
+  if not target then
+    printError("usage: claims " .. mode .. " <claim-id-or-prefix> [router-host]")
     return
   end
 else
@@ -39,9 +41,20 @@ node:open()
 
 --- Full forensic view of one claim. Item ids are shown unabbreviated here
 --- on purpose: id mismatches are exactly what this view is for.
+local function abort_claim()
+  local ok, body, err = node:request(router_host, "claim.abort",
+    { claim_id = target, reason = "manual" }, { retries = 1, timeout_s = 3 })
+  if not ok then
+    printError("abort failed: " .. (err and (err.message or err.code) or "?"))
+    return
+  end
+  line(colors.white, "claim " .. tostring(body.claim.id),
+    colors.gray, " is now ", render.status_color(body.claim.status), tostring(body.claim.status))
+end
+
 local function show_claim()
   local ok, body, err = node:request(router_host, "claim.get",
-    { claim_id = show_target }, { retries = 1, timeout_s = 3 })
+    { claim_id = target }, { retries = 1, timeout_s = 3 })
   if not ok then
     printError("lookup failed: " .. (err and (err.message or err.code) or "?"))
     return
@@ -59,9 +72,7 @@ local function show_claim()
   line(colors.gray, "  to:      ", colors.white, tostring(c.inbox_chest))
   line(colors.gray, "  moved: ", colors.white,
     tostring(c.dispatched or 0) .. "/" .. tostring(c.amount or 0),
-    colors.gray, "   job seq: ", colors.white, tostring(c.deliver_seq or "-"),
-    colors.gray, "   worker: ", colors.white,
-    c.deliver_worker and ("#" .. tostring(c.deliver_worker)) or "-")
+    colors.gray, "   job seq: ", colors.white, tostring(c.deliver_seq or "-"))
   line(colors.gray, "  history:")
   for _, h in ipairs(c.history or {}) do
     line(render.status_color(h.status), ("    %-11s"):format(tostring(h.status)),
@@ -94,7 +105,9 @@ local function list_claims()
   end
 end
 
+local MODES = { show = show_claim, abort = abort_claim, list = list_claims }
+
 local tasks = node:tasks()
-tasks[#tasks + 1] = mode == "show" and show_claim or list_claims
+tasks[#tasks + 1] = MODES[mode]
 
 parallel.waitForAny(table.unpack(tasks))

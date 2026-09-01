@@ -20,7 +20,6 @@ render.ROLE_COLORS = {
   router = colors.lightBlue,
   service = colors.orange,
   sender = colors.lime,
-  worker = colors.cyan,
 }
 
 local term_w, term_h = term.getSize()
