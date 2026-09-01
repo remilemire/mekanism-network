@@ -2,27 +2,28 @@
 dispatcher.
 
 Owns the claim ledger (persisted one JSON per claim, so a reboot resumes
-where it left off) and a pool of worker computers that execute delivery
-moves over the shared wired network. There is no router-owned hardware any
-more: goods are matched in each service's output chest and delivered
-straight into the ordering sender's inbox chest.
+where it left off) and moves NOTHING itself. Under the ownership model
+every delivery is executed by the service that owns the output chest: the
+router commands `deliver.exec` and the service pushes the goods into the
+ordering sender's inbox. The router only ever READS chests (matching).
 
 Loops:
   * rpc server       -- claim.create / claim.shipped / claim.abort /
-                        claim.get / claim.list / worker.register / sys.status
+                        claim.get / claim.list / sys.status
   * match tick       -- per service output chest, FIFO with per-item
                         reservations, promotes claims to `arrived`
-  * dispatcher pool  -- N coroutines that hand deliver-jobs to workers
-                        (or execute them directly when no workers are alive)
-                        and reconcile unknown outcomes via job.result
+  * dispatcher pool  -- N coroutines that command services to deliver and
+                        reconcile unknown outcomes via job.result
   * janitor          -- expires stale claims, nags about stuck deliveries,
-                        prunes archive/workers, watches disk space
+                        prunes the archive, watches disk space
 
 Delivery idempotency: each dispatch gets job id "<claim_id>-d<seq>" with
 the seq persisted BEFORE anything is sent. RPC retries reuse the id (the
-worker replays its persisted result); a deliberate re-dispatch bumps seq.
-After a timeout the router asks the same worker job.result before ever
-handing the job elsewhere.
+service replays its persisted result); a deliberate re-dispatch bumps seq.
+After a timeout the router asks the service job.result before retrying --
+services are static, so there is no reassignment and the only surviving
+double-move window is a service reboot between its push and its result
+write, which job.result surfaces as "interrupted" with a loud warning.
 ]]
 
 local class = require("lib.class")
@@ -32,8 +33,6 @@ local claims = require("lib.claims")
 local InventoryClient = require("lib.clients.inventory")
 
 local Router = class()
-
-local WORKER_ALIVE_MS = 90 * 1000
 
 function Router:init(config, log)
   assert(type(config.name) == "string", "router config needs a 'name'")
@@ -45,11 +44,9 @@ function Router:init(config, log)
     modem = config.modem,
     log = log,
   })
-  self.workers = {}       -- computer id -> {name, last_seen}
-  self.worker_rr = 0
   self.chest_clients = {} -- peripheral name -> InventoryClient
   self.chest_nags = {}    -- peripheral name -> last unreadable-warning time
-  self.chest_busy = {}    -- source chest -> claim id with a move in flight
+  self.service_busy = {}  -- service hostname -> claim id with a job in flight
   self.claim_busy = {}    -- claim id -> being handled by a dispatcher
   self.jobs_inflight = {} -- job id -> true
 end
@@ -68,7 +65,6 @@ function Router:setup()
   self.node:handle("claim.abort", function(body) return self:_on_claim_abort(body) end)
   self.node:handle("claim.get", function(body) return self:_on_claim_get(body) end)
   self.node:handle("claim.list", function(body) return self:_on_claim_list(body) end)
-  self.node:handle("worker.register", function(body, ctx) return self:_on_worker_register(body, ctx) end)
   self.node:handle("sys.status", function() return self:_status() end)
 end
 
@@ -147,15 +143,29 @@ function Router:_on_claim_shipped(body)
 end
 
 function Router:_on_claim_abort(body)
-  local c = self:_get_or_die(body.claim_id)
-  if c.status == claims.STATUS.FAILED then return { claim = c } end
-  if c.status == claims.STATUS.CREATED or c.status == claims.STATUS.IN_TRANSIT then
-    c.abort_reason = body.reason
-    self.ledger:transition(c, claims.STATUS.FAILED)
-    self.log:info("claim %s: aborted (%s)", util.short_id(c.id), tostring(body.reason))
-    return { claim = c }
+  -- Accepts id prefixes so the operator escape hatch (claims abort <id>)
+  -- can use the short ids the tools print.
+  local c, ambiguous = self.ledger:find(tostring(body.claim_id or ""))
+  if ambiguous then
+    error({ code = "ambiguous", message = "multiple claims match that prefix" })
   end
-  error({ code = "too_late", message = "claim is already " .. c.status })
+  if not c then
+    error({ code = "not_found", message = "no claim " .. tostring(body.claim_id) })
+  end
+  if c.status == claims.STATUS.FAILED then return { claim = c } end
+  if claims.TERMINAL[c.status] then
+    error({ code = "too_late", message = "claim is already " .. c.status })
+  end
+  -- arrived/delivering aborts are the operator escape hatch for a stuck
+  -- service; goods already produced simply become stock for future claims.
+  if c.status == claims.STATUS.ARRIVED or c.status == claims.STATUS.DELIVERING then
+    self.log:warn("claim %s: aborted while %s -- its goods become service stock",
+      util.short_id(c.id), c.status)
+  end
+  c.abort_reason = body.reason
+  self.ledger:transition(c, claims.STATUS.FAILED)
+  self.log:info("claim %s: aborted (%s)", util.short_id(c.id), tostring(body.reason))
+  return { claim = c }
 end
 
 function Router:_on_claim_get(body)
@@ -185,19 +195,10 @@ function Router:_on_claim_list(body)
       id = c.id, status = c.status, item = c.item, amount = c.amount,
       sender_id = c.sender_id, created_at = c.created_at,
       dispatched = c.dispatched, received = c.received,
-      deliver_seq = c.deliver_seq, deliver_worker = c.deliver_worker,
+      deliver_seq = c.deliver_seq, service = c.service,
     }
   end
   return { claims = rows, now = util.now_ms() }
-end
-
-function Router:_on_worker_register(body, ctx)
-  local known = self.workers[ctx.from]
-  self.workers[ctx.from] = { name = body.name, last_seen = util.now_ms() }
-  if not known then
-    self.log:info("worker '%s' (#%d) joined the pool", tostring(body.name), ctx.from)
-  end
-  return { ok = true }
 end
 
 -- Matching ---------------------------------------------------------------------
@@ -246,26 +247,13 @@ end
 
 -- Delivery dispatch ------------------------------------------------------------
 
-function Router:_pick_worker()
-  local now = util.now_ms()
-  local ids = {}
-  for id, w in pairs(self.workers) do
-    if now - w.last_seen < WORKER_ALIVE_MS then ids[#ids + 1] = id end
-  end
-  if #ids == 0 then return nil end
-  table.sort(ids)
-  self.worker_rr = self.worker_rr + 1
-  return ids[(self.worker_rr % #ids) + 1]
-end
-
 --- Pick the oldest claim that needs dispatcher attention and mark it busy.
 --- Cooperative scheduling makes check-and-mark atomic within a coroutine.
 function Router:_next_deliverable()
   local now = util.now_ms()
   for _, c in ipairs(self.ledger:by_status(claims.STATUS.ARRIVED, claims.STATUS.DELIVERING)) do
-    local src = c.service_output_chest or ""
     if (c.next_attempt_at or 0) <= now
-        and not self.claim_busy[c.id] and not self.chest_busy[src] then
+        and not self.claim_busy[c.id] and not self.service_busy[c.service or ""] then
       self.claim_busy[c.id] = true
       return c
     end
@@ -274,9 +262,9 @@ function Router:_next_deliverable()
 end
 
 function Router:_dispatch(c)
-  local src, dst = c.service_output_chest, c.inbox_chest
-  if type(src) ~= "string" or type(dst) ~= "string" then
-    self.log:warn("claim %s: missing chest addresses -- failing it", util.short_id(c.id))
+  local dst = c.inbox_chest
+  if type(c.service) ~= "string" or type(dst) ~= "string" then
+    self.log:warn("claim %s: missing service or inbox address -- failing it", util.short_id(c.id))
     self.ledger:transition(c, claims.STATUS.FAILED)
     return
   end
@@ -289,7 +277,6 @@ function Router:_dispatch(c)
   -- Persist the job identity BEFORE sending anything: a rebooted router
   -- must ask job.result about this id, never re-dispatch blindly.
   c.deliver_seq = (c.deliver_seq or 0) + 1
-  c.deliver_worker = self:_pick_worker()
   c.deliver_unresolved = true
   if c.status == claims.STATUS.ARRIVED then
     self.ledger:transition(c, claims.STATUS.DELIVERING)
@@ -298,38 +285,23 @@ function Router:_dispatch(c)
   end
 
   local job_id = c.id .. "-d" .. c.deliver_seq
-  self.chest_busy[src] = c.id
+  self.service_busy[c.service] = c.id
   self.jobs_inflight[job_id] = true
 
   local moved, fail_code
-  if c.deliver_worker then
-    local ok, body, err = self.node:request(c.deliver_worker, "move.exec", {
-      from = src, to = dst, item = c.item, amount = remaining,
-    }, { id = job_id, timeout_s = 5, retries = 2 })
-    if ok then moved = body.moved else fail_code = err and err.code or "timeout" end
-  else
-    -- No workers alive: the router is its own worker.
-    local client, cerr = self:_chest(src)
-    if client then
-      local ok, n = pcall(function() return client:push_item(dst, c.item, remaining) end)
-      if ok then moved = n
-      else
-        fail_code = "chest_error"
-        self.chest_clients[src] = nil
-      end
-    else
-      fail_code = "chest_missing"
-      self:_nag_chest(src, cerr)
-    end
-  end
+  local ok, body, err = self.node:request(c.service, "deliver.exec", {
+    to = dst, item = c.item, amount = remaining,
+  }, { id = job_id, timeout_s = 5, retries = 2 })
+  if ok then moved = body.moved else fail_code = err and err.code or "timeout" end
 
   self.jobs_inflight[job_id] = nil
-  self.chest_busy[src] = nil
+  self.service_busy[c.service] = nil
 
   if moved == nil then
-    -- A clean structured refusal means nothing moved; a timeout or a crash
-    -- mid-move leaves the outcome unknown, so keep the unresolved flag and
-    -- let reconciliation query job.result before any re-dispatch.
+    -- A clean structured refusal means nothing moved; a timeout leaves the
+    -- outcome unknown (the job may be queued behind other work on the
+    -- service), so keep the unresolved flag and let reconciliation query
+    -- job.result before any re-dispatch.
     if fail_code == "chest_missing" or fail_code == "bad_request" then
       c.deliver_unresolved = nil
     end
@@ -346,33 +318,30 @@ end
 function Router:_reconcile(c)
   if c.deliver_unresolved then
     local job_id = c.id .. "-d" .. (c.deliver_seq or 0)
-    if c.deliver_worker then
-      local ok, body, err = self.node:request(c.deliver_worker, "job.result",
-        { job_id = job_id }, { retries = 1, timeout_s = 3 })
-      local w = self.workers[c.deliver_worker]
-      local alive = w and (util.now_ms() - w.last_seen) < WORKER_ALIVE_MS
-      if ok then
-        self:_apply_move(c, body.moved)
-        return
-      elseif err and err.code == "not_found" then
-        c.deliver_unresolved = nil -- the worker never ran it; safe to retry
-        self.ledger:save(c)
-      elseif alive then
-        -- Worker is alive but unreachable this instant; ask again later.
-        c.next_attempt_at = util.now_ms() + 10 * 1000
-        self.ledger:save(c)
-        return
-      else
-        self.log:warn("claim %s: worker #%d vanished with job %s unresolved -- re-dispatching (small double-move risk)",
-          util.short_id(c.id), c.deliver_worker, job_id)
-        c.deliver_unresolved = nil
-        self.ledger:save(c)
-      end
-    else
-      self.log:warn("claim %s: self-executed move was interrupted -- re-dispatching (small double-move risk)",
-        util.short_id(c.id))
+    local ok, body, err = self.node:request(c.service, "job.result",
+      { job_id = job_id }, { retries = 1, timeout_s = 3 })
+    if ok then
+      self:_apply_move(c, body.moved)
+      return
+    end
+    local code = err and err.code
+    if code == "not_found" then
+      c.deliver_unresolved = nil -- the service never received it; safe to retry
+      self.ledger:save(c)
+    elseif code == "interrupted" then
+      -- The service rebooted between pushing and recording the result --
+      -- the one honest double-move window left in this design.
+      self.log:warn("claim %s: job %s was interrupted mid-move on %s -- re-dispatching (small double-move risk)",
+        util.short_id(c.id), job_id, tostring(c.service))
       c.deliver_unresolved = nil
       self.ledger:save(c)
+    else
+      -- Service unreachable; it is static, so wait rather than guess. The
+      -- janitor's stuck-nag makes prolonged outages visible, and
+      -- `claims abort` is the operator escape hatch.
+      c.next_attempt_at = util.now_ms() + 10 * 1000
+      self.ledger:save(c)
+      return
     end
   end
 
@@ -402,10 +371,11 @@ function Router:_complete(c)
   if c.status == claims.STATUS.ARRIVED then
     self.ledger:transition(c, claims.STATUS.DELIVERING)
   end
-  if c.status == claims.STATUS.DELIVERING then
-    c.received = c.dispatched or 0
-    self.ledger:transition(c, claims.STATUS.COMPLETED)
+  if c.status ~= claims.STATUS.DELIVERING then
+    return -- aborted out from under the dispatcher; leave it be
   end
+  c.received = c.dispatched or 0
+  self.ledger:transition(c, claims.STATUS.COMPLETED)
   self.log:info("claim %s: delivered %d x %s to #%d",
     util.short_id(c.id), c.dispatched or 0, c.item, c.sender_id)
   -- Advisory nudge; the sender's janitor reconciliation is the guarantee.
@@ -448,14 +418,6 @@ function Router:_janitor_tick()
     end
   end
 
-  -- Forget workers that have been silent for a long while.
-  for id, w in pairs(util.shallow_copy(self.workers)) do
-    if now - w.last_seen > 300 * 1000 then
-      self.workers[id] = nil
-      self.log:warn("worker '%s' (#%d) dropped from the pool (silent 5m)", tostring(w.name), id)
-    end
-  end
-
   -- Storage hygiene, every ~10 minutes (and once right after boot).
   if now - (self.archive_pruned_at or 0) > 600 * 1000 then
     self.archive_pruned_at = now
@@ -475,23 +437,19 @@ end
 
 function Router:_status()
   local by_status = {}
+  local pending = {}
   for _, c in pairs(self.ledger:all()) do
     by_status[c.status] = (by_status[c.status] or 0) + 1
-  end
-  local workers = {}
-  local now = util.now_ms()
-  for id, w in pairs(self.workers) do
-    if now - w.last_seen < WORKER_ALIVE_MS then
-      workers[#workers + 1] = { id = id, name = w.name }
+    if not claims.TERMINAL[c.status] and c.service then
+      pending[c.service] = (pending[c.service] or 0) + 1
     end
   end
-  table.sort(workers, function(a, b) return a.id < b.id end)
   return {
     role = "router",
     name = self.config.name,
     id = os.getComputerID(),
     claims = by_status,
-    workers = workers,
+    services = pending,
   }
 end
 
