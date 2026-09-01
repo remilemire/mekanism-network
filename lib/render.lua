@@ -17,7 +17,6 @@ render.STATUS_COLORS = {
 }
 render.STATUS_ORDER = { "created", "in_transit", "arrived", "delivering", "completed", "failed", "expired" }
 render.ROLE_COLORS = {
-  router = colors.lightBlue,
   service = colors.orange,
   sender = colors.lime,
 }

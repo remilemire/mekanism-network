@@ -1,6 +1,6 @@
 --[[ lib/log.lua -- leveled logger: colored terminal output + rotating file.
 
-  local log = Log.new("router", { level = "debug" })
+  local log = Log.new("crusher-1", { level = "debug" })
   log:info("claim %s created", id)
 
 Options: level ("debug"|"info"|"warn"|"error"), file (path, or false to

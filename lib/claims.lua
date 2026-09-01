@@ -1,6 +1,6 @@
 --[[ lib/claims.lua -- claim model, state machine, and persistent ledger.
 
-A claim is the router's promise to deliver processed goods back to a sender:
+A claim is a service's promise to deliver processed goods back to a sender:
 
   {
     id = "...",                  -- equals the original request id (idempotency!)
@@ -24,7 +24,7 @@ Lifecycle:
      |-> expired   |-> expired  `-> failed   `-> failed
      `-> failed    `-> failed
   (created may also jump straight to arrived: if the sender's "shipped"
-  notice is lost, the router still promotes the claim when goods show up.)
+  notice is lost, the service still promotes the claim when goods show up.)
 ]]
 
 local class = require("lib.class")
@@ -62,7 +62,7 @@ function claims.new(fields)
   local amount = math.floor(tonumber(fields.amount) or 0)
   assert(amount > 0, "claim.amount must be a positive number")
   -- Without these two addresses the claim can never be delivered; refuse it
-  -- up front rather than letting it rot at the router.
+  -- up front rather than letting it rot in the ledger.
   assert(type(fields.service_output_chest) == "string" and #fields.service_output_chest > 0,
     "claim.service_output_chest required")
   assert(type(fields.inbox_chest) == "string" and #fields.inbox_chest > 0,

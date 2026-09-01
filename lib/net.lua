@@ -11,7 +11,7 @@ One Node per computer. Design goals:
     arrive while the original is still being handled.
   * Handlers run on a worker coroutine, one at a time, so a handler may
     itself call node:request() (e.g. the crushing service calling the
-    router) without deadlocking the receive loop.
+    service) without deadlocking the receive loop.
 
 Envelope format (v1):
   { v=1, kind="req", id=<uuid>, method="claim.create", body={...}, from=<id> }

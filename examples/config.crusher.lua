@@ -15,7 +15,7 @@ return {
     -- carries items input_chest -> machines -> output_chest.
     input_chest = "minecraft:barrel_4",  -- senders ship raw goods here
     output_chest = "minecraft:barrel_5", -- the factory ejects results here;
-                                         -- the router matches claims against it
+                                         -- claims are matched against it
     -- machine = "crusher_0",            -- optional: energy/status readouts only
   },
 
