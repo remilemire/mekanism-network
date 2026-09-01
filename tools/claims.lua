@@ -1,27 +1,27 @@
---[[ tools/claims.lua -- inspect (and rescue) the router's claim ledger.
+--[[ tools/claims.lua -- inspect (and rescue) claims across every service.
 
-  tools/claims.lua                  -- newest 50 claims, any status
+  tools/claims.lua                  -- newest claims from all services
   tools/claims.lua failed           -- filter by status
   tools/claims.lua show 1a022378    -- full detail for one claim (id prefix ok)
   tools/claims.lua abort 1a022378   -- operator escape hatch: fail a claim
                                        (its goods recycle into service stock)
-  (append a router hostname as the last argument if it isn't "router")
+  (append a service hostname as the last argument to target just one)
 ]]
 
 local args = { ... }
-local mode, status_filter, target, router_host
+local mode, status_filter, target, explicit_host
 if args[1] == "show" or args[1] == "abort" then
   mode = args[1]
   target = args[2]
-  router_host = args[3] or "router"
+  explicit_host = args[3]
   if not target then
-    printError("usage: claims " .. mode .. " <claim-id-or-prefix> [router-host]")
+    printError("usage: claims " .. mode .. " <claim-id-or-prefix> [service-host]")
     return
   end
 else
   mode = "list"
   status_filter = args[1]
-  router_host = args[2] or "router"
+  explicit_host = args[2]
 end
 
 local here = fs.getDir(shell.getRunningProgram())
@@ -39,27 +39,22 @@ local line = render.line
 local node = Node.new({ client = true, log = Log.new("claims", { level = "warn", file = false }) })
 node:open()
 
---- Full forensic view of one claim. Item ids are shown unabbreviated here
---- on purpose: id mismatches are exactly what this view is for.
-local function abort_claim()
-  local ok, body, err = node:request(router_host, "claim.abort",
-    { claim_id = target, reason = "manual" }, { retries = 1, timeout_s = 3 })
-  if not ok then
-    printError("abort failed: " .. (err and (err.message or err.code) or "?"))
-    return
+--- Every service on the network (or just the explicitly named one).
+local function service_hosts()
+  if explicit_host then return { explicit_host } end
+  local hosts = {}
+  local ids = { rednet.lookup(node.protocol) }
+  table.sort(ids)
+  for _, id in ipairs(ids) do
+    local ok, body = node:request(id, "sys.status", {}, { retries = 0, timeout_s = 2 })
+    if ok and body.role == "service" and body.name then
+      hosts[#hosts + 1] = body.name
+    end
   end
-  line(colors.white, "claim " .. tostring(body.claim.id),
-    colors.gray, " is now ", render.status_color(body.claim.status), tostring(body.claim.status))
+  return hosts
 end
 
-local function show_claim()
-  local ok, body, err = node:request(router_host, "claim.get",
-    { claim_id = target }, { retries = 1, timeout_s = 3 })
-  if not ok then
-    printError("lookup failed: " .. (err and (err.message or err.code) or "?"))
-    return
-  end
-  local c = body.claim
+local function print_claim(c)
   local now = util.now_ms()
   line(colors.white, "claim " .. tostring(c.id))
   line(colors.gray, "  status:  ", render.status_color(c.status), tostring(c.status),
@@ -71,8 +66,7 @@ local function show_claim()
   line(colors.gray, "  from:    ", colors.white, tostring(c.service_output_chest))
   line(colors.gray, "  to:      ", colors.white, tostring(c.inbox_chest))
   line(colors.gray, "  moved: ", colors.white,
-    tostring(c.dispatched or 0) .. "/" .. tostring(c.amount or 0),
-    colors.gray, "   job seq: ", colors.white, tostring(c.deliver_seq or "-"))
+    tostring(c.dispatched or 0) .. "/" .. tostring(c.amount or 0))
   line(colors.gray, "  history:")
   for _, h in ipairs(c.history or {}) do
     line(render.status_color(h.status), ("    %-11s"):format(tostring(h.status)),
@@ -80,27 +74,79 @@ local function show_claim()
   end
 end
 
+--- Ask each service in turn until one knows the claim. Returns the reply
+--- body, or nil after reporting why.
+local function find_on_services(method, extra)
+  local hosts = service_hosts()
+  if #hosts == 0 then
+    printError("no services found -- are they running main.lua?")
+    return nil
+  end
+  for _, host in ipairs(hosts) do
+    local req = { claim_id = target }
+    for k, v in pairs(extra or {}) do req[k] = v end
+    local ok, body, err = node:request(host, method, req, { retries = 1, timeout_s = 3 })
+    if ok then return body end
+    local code = err and err.code
+    if code == "ambiguous" then
+      printError("multiple claims on " .. host .. " match that prefix -- use more characters")
+      return nil
+    elseif code ~= "not_found" and code ~= "timeout" then
+      printError(host .. ": " .. (err and (err.message or code) or "?"))
+      return nil
+    end
+  end
+  printError("no claim matches " .. tostring(target) .. " on any service")
+  return nil
+end
+
+local function show_claim()
+  local body = find_on_services("claim.get")
+  if body then print_claim(body.claim) end
+end
+
+local function abort_claim()
+  local body = find_on_services("claim.abort", { reason = "manual" })
+  if body then
+    line(colors.white, "claim " .. tostring(body.claim.id), colors.gray, " is now ",
+      render.status_color(body.claim.status), tostring(body.claim.status))
+  end
+end
+
 local function list_claims()
-  local ok, body, err = node:request(router_host, "claim.list",
-    { status = status_filter }, { retries = 1, timeout_s = 3 })
-  if not ok then
-    printError("router unreachable: " .. (err and (err.message or err.code) or "?"))
+  local hosts = service_hosts()
+  if #hosts == 0 then
+    printError("no services found -- are they running main.lua?")
     return
   end
-  if #body.claims == 0 then
+  local rows = {}
+  local now = util.now_ms()
+  for _, host in ipairs(hosts) do
+    local ok, body = node:request(host, "claim.list",
+      { status = status_filter }, { retries = 1, timeout_s = 3 })
+    if ok then
+      now = body.now or now
+      for _, c in ipairs(body.claims) do rows[#rows + 1] = c end
+    else
+      printError(host .. " did not answer; its claims are missing below")
+    end
+  end
+  if #rows == 0 then
     print("no claims" .. (status_filter and (" with status " .. status_filter) or ""))
     return
   end
-  local now = body.now or util.now_ms()
-  line(colors.gray, ("%-8s %-10s %4s %-15s %-3s %s")
-    :format("id", "status", "amt", "item", "snd", "age"))
-  for _, c in ipairs(body.claims) do
+  table.sort(rows, function(a, b) return (a.created_at or 0) > (b.created_at or 0) end)
+
+  line(colors.gray, ("%-8s %-10s %3s %-12s %-8s %s")
+    :format("id", "status", "amt", "item", "service", "age"))
+  for i = 1, math.min(#rows, 50) do
+    local c = rows[i]
     line(
       colors.white, ("%-8s "):format(util.short_id(c.id)),
       render.status_color(c.status), ("%-10s "):format(tostring(c.status)),
-      colors.white, ("%4d "):format(c.amount or 0),
-      colors.lightGray, ("%-15s "):format(render.short_item(c.item):sub(1, 15)),
-      colors.white, ("#%-2s "):format(tostring(c.sender_id)),
+      colors.white, ("%3d "):format(c.amount or 0),
+      colors.lightGray, ("%-12s "):format(render.short_item(c.item):sub(1, 12)),
+      colors.white, ("%-8s "):format(tostring(c.service or "?"):sub(1, 8)),
       colors.gray, util.fmt_age(now - (c.created_at or now)))
   end
 end

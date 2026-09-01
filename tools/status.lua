@@ -29,7 +29,10 @@ local function count_keys(t)
   return n
 end
 
-local function render_router(body)
+local function render_service(body)
+  line(colors.gray, "  recipes: ", colors.white, tostring(count_keys(body.recipes)),
+    colors.gray, "   handled: ", colors.white, tostring(body.requests_handled or 0),
+    colors.gray, "   sent: ", colors.white, tostring(body.items_delivered or 0))
   local segs = { colors.gray, "  claims: " }
   local any = false
   for _, s in ipairs(render.STATUS_ORDER) do
@@ -45,19 +48,6 @@ local function render_router(body)
     segs[#segs + 1] = "none"
   end
   line(table.unpack(segs))
-
-  local parts = {}
-  for service, n in pairs(body.services or {}) do
-    parts[#parts + 1] = service .. ": " .. n
-  end
-  table.sort(parts)
-  line(colors.gray, "  queues: ", #parts > 0 and colors.white or colors.lightGray,
-    #parts == 0 and "empty" or table.concat(parts, ", "))
-end
-
-local function render_service(body)
-  line(colors.gray, "  recipes: ", colors.white, tostring(count_keys(body.recipes)),
-    colors.gray, "   handled: ", colors.white, tostring(body.requests_handled or 0))
   line(colors.gray, "  output: ", colors.white, fmt_counts(body.output))
 end
 
@@ -81,7 +71,6 @@ local function render_sender(body)
 end
 
 local RENDERERS = {
-  router = render_router,
   service = render_service,
   sender = render_sender,
 }
