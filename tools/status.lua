@@ -60,7 +60,8 @@ local function render_sender(body)
   local parts = {}
   for item, n in pairs(per_item) do parts[#parts + 1] = n .. "x " .. short_item(item) end
   line(colors.gray, "  orders: ", #parts > 0 and colors.yellow or colors.lightGray,
-    #parts == 0 and "none" or table.concat(parts, ", "))
+    #parts == 0 and "none" or table.concat(parts, ", "),
+    colors.red, body.orders_paused and "  PAUSED (inbox stuck)" or "")
   line(colors.gray, "  buffer: ", colors.white, fmt_counts(body.input_buffer))
   if count_keys(body.outbox) > 0 then
     line(colors.gray, "  outbox: ", colors.yellow, fmt_counts(body.outbox))

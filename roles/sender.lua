@@ -111,6 +111,23 @@ end
 -- Ordering ---------------------------------------------------------------------
 
 function Sender:_order_tick()
+  -- Backpressure: if the inbox can't fully drain (result inventory full),
+  -- stop placing new orders -- deliveries would only pile up behind the
+  -- clog. In-flight claims still land in the inbox; that's what it's for.
+  if self.drain_stuck_since then
+    self:_drain_inbox() -- keep trying; clears the flag once space frees
+    if self.drain_stuck_since then
+      if util.now_ms() - (self.order_pause_nag_at or 0) > 60000 then
+        self.order_pause_nag_at = util.now_ms()
+        self.log:warn("orders paused: inbox undrained for %s (result inventory full?)",
+          util.fmt_age(util.now_ms() - self.drain_stuck_since))
+      end
+      return
+    end
+    self.order_pause_nag_at = nil
+    self.log:info("inbox drained; orders resume")
+  end
+
   local batch = self.config.batch or {}
   local max_inflight = batch.max_inflight or 4
   local inflight = {}
@@ -376,6 +393,7 @@ function Sender:_status()
     name = self.config.name,
     id = os.getComputerID(),
     active_orders = self.active,
+    orders_paused = self.drain_stuck_since ~= nil or nil,
     input_buffer = self.input_buffer:counts(),
     outbox = self.outbox_inventory:counts(),
     inbox_buffer = self.inbox_inventory:counts(),

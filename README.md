@@ -112,6 +112,11 @@ made transactional by `pushItems` return counts:
 - `delivery.landed` is advisory; the sender's janitor reconciles every
   active order against the owning service's `claim.get` (freeing slots on
   failure/expiry and re-sending lost shipped-notices).
+- Backpressure: while the sender's inbox can't fully drain (result
+  inventory full), it stops placing new orders -- in-flight deliveries
+  still land in the inbox, but no new work enters the pipeline until the
+  clog clears. Status shows the pause; orders resume within a tick of
+  space freeing up.
 - Every service persists claim mutations (tmp-file + move writes), prunes
   its archive, and warns before the disk quota fills. Chest access is
   pcall-guarded: a renamed or detached wired modem puts claims on hold
