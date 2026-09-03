@@ -36,6 +36,16 @@ return {
   },
   poll_s = 2,         -- input buffer scan interval
 
+  -- Optional in-world dashboard on an attached monitor (advanced = color).
+  -- The sender keeps logging to its own terminal; the monitor is extra.
+  -- monitor = {
+  --   device = "monitor_0",               -- peripheral name (side or network)
+  --   title = "Fission Reactor",          -- display name
+  --   description = "iron dust for fuel", -- brief, optional
+  --   scale = 0.5,                        -- text scale, optional
+  --   refresh_s = 1,                      -- redraw interval, optional
+  -- },
+
   -- data_dir = "/data/sender",
   -- log = { level = "debug" },
   -- restart_delay_s = 5,

@@ -132,6 +132,7 @@ lib/
   net.lua                    rednet RPC node (retries, dedup, replay)
   claims.lua                 claim model + state machine + persistent ledger
   render.lua                 colored terminal output for the tools
+  monitor.lua                MonitorView: optional in-world dashboards
   clients/
     inventory.lua            generic inventory client (drawer-aware push_item)
     multi_inventory.lua      several inventories presented as one buffer
@@ -188,6 +189,11 @@ That's it — there is nothing else to configure; services are self-contained.
 
 - `tools/status.lua` — compact color-coded view of every node (claims,
   buffers, output stock). Pass `-v` for the full raw payloads.
+- Senders can drive an optional monitor (`monitor = {...}` in the sender
+  config): display name, description, orders in progress with their live
+  status, a spinner while work is in flight, and PAUSED / inbox warnings.
+  It draws on the monitor peripheral directly, so the sender's own
+  terminal keeps logging as usual; a missing monitor just warns.
 - `tools/claims.lua [status]` — merged ledger across all services;
   `show <id>` — one claim in full (chests, history; id prefixes work);
   `abort <id>` — fail a wedged claim (its goods recycle into stock).
