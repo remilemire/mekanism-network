@@ -10,6 +10,8 @@ without it and can retry later.
 
 Rows use the same segment convention as lib/render.line:
   { color1, "text1", color2, "text2", ... }
+A color may also be a table { fg = ..., bg = ... } to paint the background
+(that is how solid pixels are drawn -- CC's block glyph is a dither).
 ]]
 
 local class = require("lib.class")
@@ -71,11 +73,23 @@ function MonitorView:draw(rows)
         if remaining <= 0 then break end
         local text = tostring(segs[i + 1] or "")
         if #text > remaining then text = text:sub(1, remaining) end
-        if color then mon.setTextColor(segs[i] or colors.white) end
+        local spec = segs[i]
+        local fg, bg = spec, colors.black
+        if type(spec) == "table" then
+          fg, bg = spec.fg or colors.white, spec.bg or colors.black
+        end
+        if color then
+          mon.setTextColor(fg or colors.white)
+          mon.setBackgroundColor(bg)
+        else
+          -- Basic monitors only accept black/white/grays.
+          mon.setBackgroundColor(bg == colors.black and colors.black or colors.white)
+        end
         mon.write(text)
         remaining = remaining - #text
       end
     end
+    mon.setBackgroundColor(colors.black)
     if color then mon.setTextColor(colors.white) end
   end)
   if not ok then
@@ -114,22 +128,33 @@ local FONT = {
   ["'"] = { ".#.", ".#.", "...", "...", "..." }, ["&"] = { ".#.", "#.#", ".#.", "#.#", ".##" },
 }
 local BLANK = { "...", "...", "...", "...", "..." }
-local PIXEL = "\127" -- CC's solid block character
 
---- Render `text` as 5 rows of block letters (4 columns per character) in
---- `color`, or nil when it would not fit in `width`. Lowercase is folded
---- to uppercase; unknown characters render blank.
+--- Render `text` as 5 rows of block letters (4 columns per character),
+--- painting lit pixels as `color` backgrounds, or nil when it would not
+--- fit in `width`. Lowercase is folded to uppercase; unknown characters
+--- render blank.
 function MonitorView.big_rows(text, color, width)
   text = tostring(text):upper()
   if #text * 4 - 1 > width then return nil end
   local rows = {}
   for r = 1, 5 do
-    local parts = {}
+    local bits = {}
     for i = 1, #text do
-      local glyph = FONT[text:sub(i, i)] or BLANK
-      parts[#parts + 1] = (glyph[r]:gsub("#", PIXEL):gsub("%.", " "))
+      bits[#bits + 1] = (FONT[text:sub(i, i)] or BLANK)[r]
     end
-    rows[r] = { color, table.concat(parts, " ") }
+    local line = table.concat(bits, ".") -- one blank column between letters
+    -- Run-length encode into segments: lit runs paint the background.
+    local segs = {}
+    local pos = 1
+    while pos <= #line do
+      local ch = line:sub(pos, pos)
+      local stop = pos
+      while stop <= #line and line:sub(stop, stop) == ch do stop = stop + 1 end
+      segs[#segs + 1] = (ch == "#") and { bg = color } or colors.white
+      segs[#segs + 1] = string.rep(" ", stop - pos)
+      pos = stop
+    end
+    rows[r] = segs
   end
   return rows
 end
