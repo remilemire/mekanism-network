@@ -43,7 +43,10 @@ return {
   --   title = "Fission Reactor",          -- display name; drawn in block
   --                                       -- letters when it fits (4 cols/char)
   --   description = "iron dust for fuel", -- brief, optional
-  --   scale = 0.5,                        -- text scale, optional
+  --   scale = 0.5,                        -- text scale for the WHOLE monitor
+  --                                       -- (0.5-5; bigger = fewer rows/cols)
+  --   big_title = true,                   -- block-letter title when it fits;
+  --                                       -- false = plain title (raise scale instead)
   --   refresh_s = 1,                      -- redraw interval, optional
   -- },
 

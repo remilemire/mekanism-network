@@ -429,11 +429,17 @@ function Sender:_monitor_rows(w, h)
     return (entries[a].created_at or 0) < (entries[b].created_at or 0)
   end)
 
-  -- Header: the title in block letters when it fits (and the monitor is
-  -- tall enough to spare five rows), plain text otherwise.
+  -- Header: the title in block letters when enabled and it fits (with
+  -- rows to spare), plain text otherwise. A blank row keeps the
+  -- description from crowding the glyphs.
   local title = tostring(mcfg.title or self.config.name)
-  local rows = (h >= 10) and MonitorView.big_rows(title, colors.yellow, w) or nil
-  if not rows then
+  local rows = nil
+  if mcfg.big_title ~= false and h >= 10 then
+    rows = MonitorView.big_rows(title, colors.yellow, w)
+  end
+  if rows then
+    rows[#rows + 1] = { colors.white, "" }
+  else
     rows = { { colors.yellow, title } }
   end
   if mcfg.description and #tostring(mcfg.description) > 0 then
