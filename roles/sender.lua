@@ -299,11 +299,6 @@ function Sender:_on_landed(body)
   end
   self.active[body.claim_id] = nil
   self.remote_status[body.claim_id] = nil
-  self.last_landed = {
-    item = (entry and entry.output_item) or "?",
-    moved = math.floor(tonumber(body.moved) or 0),
-    at = util.now_ms(),
-  }
   self.log:info("claim %s: %d items landed in the inbox",
     util.short_id(body.claim_id), tonumber(body.moved) or 0)
   self:_drain_inbox()
@@ -434,7 +429,19 @@ function Sender:_monitor_rows(w, h)
     return (entries[a].created_at or 0) < (entries[b].created_at or 0)
   end)
 
-  -- Header: title left, spinner (or PAUSED) right.
+  -- Header: the title in block letters when it fits (and the monitor is
+  -- tall enough to spare five rows), plain text otherwise.
+  local title = tostring(mcfg.title or self.config.name)
+  local rows = (h >= 10) and MonitorView.big_rows(title, colors.yellow, w) or nil
+  if not rows then
+    rows = { { colors.yellow, title } }
+  end
+  if mcfg.description and #tostring(mcfg.description) > 0 then
+    rows[#rows + 1] = { colors.lightGray, tostring(mcfg.description) }
+  end
+  rows[#rows + 1] = { colors.gray, string.rep("-", w) }
+
+  -- Orders line with the spinner (or PAUSED) at the right edge.
   local marker, marker_color = "", colors.white
   if self.drain_stuck_since then
     marker, marker_color = "PAUSED", colors.red
@@ -442,16 +449,9 @@ function Sender:_monitor_rows(w, h)
     self.spinner = (self.spinner % #SPINNER) + 1
     marker, marker_color = SPINNER[self.spinner], colors.lime
   end
-  local title = tostring(mcfg.title or self.config.name):sub(1, math.max(1, w - #marker - 1))
-  local rows = {
-    { colors.yellow, title, colors.white, string.rep(" ", math.max(1, w - #title - #marker)),
-      marker_color, marker },
-  }
-  if mcfg.description and #tostring(mcfg.description) > 0 then
-    rows[#rows + 1] = { colors.lightGray, tostring(mcfg.description) }
-  end
-  rows[#rows + 1] = { colors.gray, string.rep("-", w) }
-  rows[#rows + 1] = { colors.white, ("Orders (%d)"):format(#ids) }
+  local label = ("Orders (%d)"):format(#ids)
+  rows[#rows + 1] = { colors.white, label, colors.white,
+    string.rep(" ", math.max(1, w - #label - #marker)), marker_color, marker }
 
   -- Footer first, so the order list can budget the space between.
   local footer = {
@@ -463,11 +463,6 @@ function Sender:_monitor_rows(w, h)
     footer[#footer + 1] = { colors.gray, "inbox: ",
       self.drain_stuck_since and colors.red or colors.yellow,
       inbox_n .. " items" .. (self.drain_stuck_since and " (stuck)" or "") }
-  end
-  if self.last_landed then
-    footer[#footer + 1] = { colors.gray, "last: ", colors.green,
-      ("%d %s"):format(self.last_landed.moved or 0, render.short_item(self.last_landed.item)),
-      colors.gray, " " .. util.fmt_age(now - self.last_landed.at) .. " ago" }
   end
   while #footer > 0 and h - #rows - #footer < 1 do
     table.remove(footer)

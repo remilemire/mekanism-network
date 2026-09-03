@@ -40,7 +40,8 @@ return {
   -- The sender keeps logging to its own terminal; the monitor is extra.
   -- monitor = {
   --   device = "monitor_0",               -- peripheral name (side or network)
-  --   title = "Fission Reactor",          -- display name
+  --   title = "Fission Reactor",          -- display name; drawn in block
+  --                                       -- letters when it fits (4 cols/char)
   --   description = "iron dust for fuel", -- brief, optional
   --   scale = 0.5,                        -- text scale, optional
   --   refresh_s = 1,                      -- redraw interval, optional
