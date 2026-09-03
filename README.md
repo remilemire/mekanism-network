@@ -117,6 +117,11 @@ made transactional by `pushItems` return counts:
   still land in the inbox, but no new work enters the pipeline until the
   clog clears. Status shows the pause; orders resume within a tick of
   space freeing up.
+- Orphan adoption: claims take exactly their amount, so stock nobody
+  expects (leftovers of expired/aborted claims, migration wipes) would
+  circulate forever. A new order measures such stock conservatively --
+  chest count minus every open claim's outstanding amount -- and folds it
+  into the new claim, so the chest self-cleans on the next quiet order.
 - Every service persists claim mutations (tmp-file + move writes), prunes
   its archive, and warns before the disk quota fills. Chest access is
   pcall-guarded: a renamed or detached wired modem puts claims on hold

@@ -78,6 +78,7 @@ function claims.new(fields)
     item = fields.item,
     amount = amount,
     ratio = tonumber(fields.ratio) or 1,
+    adopted = tonumber(fields.adopted) or nil, -- orphaned stock folded in
     service_input_chest = fields.service_input_chest,
     service_output_chest = fields.service_output_chest,
     inbox_chest = fields.inbox_chest,

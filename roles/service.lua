@@ -101,6 +101,12 @@ function Service:_on_request(body, ctx)
     return { accepted = true, claim = existing, input_chest = self.config.devices.input_chest }
   end
 
+  -- Orphaned stock: goods in the output chest that no open claim expects
+  -- (leftovers of expired/aborted claims, migration wipes). Claims take
+  -- exactly their amount, so such a residual would otherwise circulate
+  -- forever -- fold it into this new claim instead.
+  local adopted = self:_orphaned(recipe.output)
+
   local ok, claim = pcall(claims.new, {
     id = body.id,
     sender_id = ctx.from,
@@ -108,7 +114,8 @@ function Service:_on_request(body, ctx)
     input_item = body.item,
     input_amount = amount,
     item = recipe.output,
-    amount = math.floor(amount * (recipe.ratio or 1)),
+    amount = math.floor(amount * (recipe.ratio or 1)) + adopted,
+    adopted = adopted > 0 and adopted or nil,
     ratio = recipe.ratio or 1,
     service_input_chest = self.config.devices.input_chest,
     service_output_chest = self.config.devices.output_chest,
@@ -122,8 +129,28 @@ function Service:_on_request(body, ctx)
   self.handled = self.handled + 1
   self.log:info("claim %s: accepted %d x %s from #%d -> %d x %s",
     util.short_id(claim.id), amount, body.item, ctx.from, claim.amount, claim.item)
+  if adopted > 0 then
+    self.log:info("claim %s: adopting %d orphaned x %s sitting in the output chest",
+      util.short_id(claim.id), adopted, claim.item)
+  end
 
   return { accepted = true, claim = claim, input_chest = self.config.devices.input_chest }
+end
+
+--- Stock in the output chest beyond what every open claim still expects.
+--- Conservative by construction: in-flight claims count their full
+--- outstanding amount even if their goods are still being produced, so
+--- pending production is never mistaken for an orphan.
+function Service:_orphaned(item)
+  local ok, counts = pcall(function() return self.output_chest:counts() end)
+  if not ok then return 0 end
+  local expected = 0
+  for _, c in pairs(self.ledger:all()) do
+    if c.item == item and not claims.TERMINAL[c.status] then
+      expected = expected + math.max(0, (c.amount or 0) - (c.dispatched or 0))
+    end
+  end
+  return math.max(0, (counts[item] or 0) - expected)
 end
 
 function Service:_find_or_die(claim_id)
@@ -143,7 +170,7 @@ function Service:_on_claim_shipped(body)
     local shipped = math.floor(tonumber(body.amount) or c.input_amount)
     if shipped > 0 and shipped ~= c.input_amount then
       c.input_amount = shipped
-      c.amount = math.floor(shipped * (c.ratio or 1))
+      c.amount = math.floor(shipped * (c.ratio or 1)) + (c.adopted or 0)
       self.log:info("claim %s: scaled to %d x %s (partial shipment)",
         util.short_id(c.id), c.amount, c.item)
     end

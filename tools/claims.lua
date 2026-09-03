@@ -61,6 +61,9 @@ local function print_claim(c)
     colors.red, c.abort_reason and ("  (" .. tostring(c.abort_reason) .. ")") or "")
   line(colors.gray, "  output:  ", colors.white, ("%d x %s"):format(c.amount or 0, tostring(c.item)))
   line(colors.gray, "  input:   ", colors.white, ("%d x %s"):format(c.input_amount or 0, tostring(c.input_item)))
+  if c.adopted then
+    line(colors.gray, "  adopted: ", colors.white, ("%d orphaned x %s"):format(c.adopted, tostring(c.item)))
+  end
   line(colors.gray, "  sender:  ", colors.white, "#" .. tostring(c.sender_id),
     colors.gray, "   service: ", colors.white, tostring(c.service))
   line(colors.gray, "  from:    ", colors.white, tostring(c.service_output_chest))
