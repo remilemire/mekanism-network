@@ -117,6 +117,11 @@ made transactional by `pushItems` return counts:
   still land in the inbox, but no new work enters the pipeline until the
   clog clears. Status shows the pause; orders resume within a tick of
   space freeing up.
+- Expiry waits for the pipeline: a shipped claim's TTL clock stays parked
+  while its raw input is still queued in the service input chest, so slow
+  or busy factories never orphan goods by timing out. Expiry means the
+  pipeline drained and the goods never appeared (wrong recipe id, dead
+  machine).
 - Orphan adoption: claims take exactly their amount, so stock nobody
   expects (leftovers of expired/aborted claims, migration wipes) would
   circulate forever. A new order measures such stock conservatively --
@@ -201,8 +206,10 @@ That's it — there is nothing else to configure; services are self-contained.
   terminal keeps logging as usual; a missing monitor just warns.
 - `tools/claims.lua [status]` — merged ledger across all services;
   `show <id>` — one claim in full (chests, history; id prefixes work);
-  `abort <id>` — fail a wedged claim (its goods recycle into stock).
-  Append a service hostname to target just one.
+  `abort <id>` — fail a wedged claim (its goods recycle into stock);
+  `archive [status]` — finished claims already swept out of the live
+  ledger (this is where expired claims go after an hour). Append a service
+  hostname to target just one.
 - Logs go to the terminal and `/data/logs/<name>.log` (rotating).
 - Recipe `output` ids must match what your pack's machines really produce
   (modpacks often unify dusts, e.g. `ftbmaterials:iron_dust`) — a wrong id

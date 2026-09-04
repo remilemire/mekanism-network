@@ -2,6 +2,8 @@
 
   tools/claims.lua                  -- newest claims from all services
   tools/claims.lua failed           -- filter by status
+  tools/claims.lua archive          -- finished claims already swept out of the
+  tools/claims.lua archive expired     live ledger (expired ones hide here!)
   tools/claims.lua show 1a022378    -- full detail for one claim (id prefix ok)
   tools/claims.lua abort 1a022378   -- operator escape hatch: fail a claim
                                        (its goods recycle into service stock)
@@ -18,6 +20,10 @@ if args[1] == "show" or args[1] == "abort" then
     printError("usage: claims " .. mode .. " <claim-id-or-prefix> [service-host]")
     return
   end
+elseif args[1] == "archive" then
+  mode = "archive"
+  status_filter = args[2]
+  explicit_host = args[3]
 else
   mode = "list"
   status_filter = args[1]
@@ -126,7 +132,7 @@ local function list_claims()
   local now = util.now_ms()
   for _, host in ipairs(hosts) do
     local ok, body = node:request(host, "claim.list",
-      { status = status_filter }, { retries = 1, timeout_s = 3 })
+      { status = status_filter, archive = mode == "archive" or nil }, { retries = 1, timeout_s = 3 })
     if ok then
       now = body.now or now
       for _, c in ipairs(body.claims) do rows[#rows + 1] = c end
@@ -135,7 +141,8 @@ local function list_claims()
     end
   end
   if #rows == 0 then
-    print("no claims" .. (status_filter and (" with status " .. status_filter) or ""))
+    print("no " .. (mode == "archive" and "archived " or "") .. "claims"
+      .. (status_filter and (" with status " .. status_filter) or ""))
     return
   end
   table.sort(rows, function(a, b) return (a.created_at or 0) > (b.created_at or 0) end)
@@ -154,7 +161,7 @@ local function list_claims()
   end
 end
 
-local MODES = { show = show_claim, abort = abort_claim, list = list_claims }
+local MODES = { show = show_claim, abort = abort_claim, list = list_claims, archive = list_claims }
 
 local tasks = node:tasks()
 tasks[#tasks + 1] = MODES[mode]

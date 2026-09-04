@@ -174,6 +174,18 @@ function ClaimLedger:find(prefix)
   return matches[1], false
 end
 
+--- Archived (finished) claims, newest first. Reads every archive file, so
+--- keep it to operator tooling.
+function ClaimLedger:archived()
+  local out = {}
+  for _, id in ipairs(self.archive_store:ids()) do
+    local ok, c = pcall(function() return self.archive_store:get(id) end)
+    if ok and c then out[#out + 1] = c end
+  end
+  table.sort(out, function(a, b) return (a.updated_at or 0) > (b.updated_at or 0) end)
+  return out
+end
+
 --- Delete archived claims older than max_age_ms (and any unreadable ones).
 --- Without this the archive grows until the computer's disk quota fills and
 --- every ledger write starts failing. Returns how many were removed.

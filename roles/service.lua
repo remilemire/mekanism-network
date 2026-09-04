@@ -201,7 +201,12 @@ end
 
 function Service:_on_claim_list(body)
   local list
-  if body.status then
+  if body.archive then
+    list = {}
+    for _, c in ipairs(self.ledger:archived()) do
+      if not body.status or c.status == body.status then list[#list + 1] = c end
+    end
+  elseif body.status then
     list = self.ledger:by_status(body.status)
   else
     list = {}
@@ -349,11 +354,25 @@ function Service:_janitor_tick()
   local stuck_ms = (self.config.stuck_after_s or 300) * 1000
   local retention_ms = (self.config.retention_s or 3600) * 1000
 
+  -- A shipped claim only expires once its raw input has drained out of the
+  -- input chest: while material for it is still queued, production is
+  -- demonstrably ongoing and the TTL clock stays parked. Expiry then means
+  -- "the pipeline drained and the goods never appeared" -- a wrong recipe
+  -- id or a dead machine, not a slow or busy one. (Expired claims orphan
+  -- their goods into stock, so a too-eager TTL is what leaves loose stock.)
+  local ok_in, queued = pcall(function() return self.input_chest:counts() end)
+  if not ok_in then queued = {} end
+  self.ttl_clock = self.ttl_clock or {}
   for _, c in ipairs(self.ledger:by_status(claims.STATUS.CREATED, claims.STATUS.IN_TRANSIT)) do
-    if now - c.updated_at > ttl_ms then
+    local processing = c.status == claims.STATUS.IN_TRANSIT
+      and (queued[c.input_item or ""] or 0) > 0
+    if processing then
+      self.ttl_clock[c.id] = now
+    elseif now - (self.ttl_clock[c.id] or c.updated_at) > ttl_ms then
+      self.ttl_clock[c.id] = nil
       self.ledger:transition(c, claims.STATUS.EXPIRED)
-      self.log:warn("claim %s: expired after %s -- its goods recycle into stock for future claims",
-        util.short_id(c.id), util.fmt_age(now - c.created_at))
+      self.log:warn("claim %s: expired %s after its last activity with no %s queued -- its goods recycle into stock",
+        util.short_id(c.id), util.fmt_age(ttl_ms), tostring(c.input_item))
     end
   end
 
