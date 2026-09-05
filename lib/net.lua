@@ -132,6 +132,7 @@ function Node:request(target, method, body, opts)
     body = body or {}, from = os.getComputerID(),
   }
 
+  local started = os.clock()
   for attempt = 1, retries + 1 do
     local dest = self:resolve(target)
     if dest then
@@ -144,12 +145,25 @@ function Node:request(target, method, body, opts)
           local entry = self.responses[id]
           self.responses[id] = nil
           local res = entry and entry.res
+          if attempt > 1 and self.log then
+            -- Retries are silent by design; at debug level they explain
+            -- where a slow-feeling network actually spends its time.
+            self.log:debug("%s to %s answered on attempt %d after %.1fs",
+              method, tostring(target), attempt, os.clock() - started)
+          end
           if res and res.ok then return true, res.body or {} end
           return false, nil, (res and res.err) or { code = "error" }
         elseif ev == "timer" and p1 == timer then
+          if self.log then
+            self.log:debug("%s to %s: no reply within %ss (attempt %d of %d)",
+              method, tostring(target), tostring(timeout_s), attempt, retries + 1)
+          end
           break -- this attempt timed out; fall through to retry
         end
       end
+    elseif self.log then
+      self.log:debug("%s: cannot resolve %s (attempt %d of %d)",
+        method, tostring(target), attempt, retries + 1)
     end
     -- A stale hostname mapping is one reason for silence; re-look it up.
     if type(target) == "string" then self.lookup_cache[target] = nil end

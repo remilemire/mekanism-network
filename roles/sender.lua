@@ -143,22 +143,40 @@ function Sender:_order_tick()
 
   local batch = self.config.batch or {}
   local max_inflight = batch.max_inflight or 4
+  local batch_min = batch.min or 1
+  local batch_max = batch.max or 64
   local inflight = {}
   for _, item in pairs(self.active) do
     inflight[item] = (inflight[item] or 0) + 1
   end
+
+  local placed = 0
+  local counts = self.input_buffer:counts()
   for item, service in pairs(self.item_routes) do
-    if (inflight[item] or 0) < max_inflight then
-      local count = self.input_buffer:count(item)
-      -- batch.min keeps items trickling in through pipes from fragmenting
-      -- into many tiny claims; one order per item per tick does the rest.
-      if count >= (batch.min or 1) then
-        self:_place_order(item, service, math.min(count, batch.max or 64))
-      end
+    local count = counts[item] or 0
+    while (inflight[item] or 0) < max_inflight and count >= batch_min do
+      local amount = math.min(count, batch_max)
+      local staged = self:_place_order(item, service, amount)
+      if not staged or staged == 0 then break end
+      placed = placed + 1
+      inflight[item] = (inflight[item] or 0) + 1
+      count = count - staged
+      -- A big pile fans out into full claims within one tick, up to
+      -- max_inflight. A partial claim ends the tick for this item, so
+      -- items trickling in through a pipe don't fragment into many tiny
+      -- claims (batch.min gates the first one; one partial per tick gates
+      -- the rest).
+      if amount < batch_max or staged < amount then break end
     end
   end
+
+  -- One transport pass for everything staged this tick: the outbox
+  -- commingles claims, and each pass costs several chest reads.
+  if placed > 0 then self:_push_outbox() end
 end
 
+--- Place one order and stage its goods into the outbox. Returns how many
+--- items were staged (nil when the service refused the order).
 function Sender:_place_order(item, service, amount)
   local request_id = util.uuid()
   self.log:info("ordering %d x %s from %s", amount, item, service)
@@ -170,7 +188,7 @@ function Sender:_place_order(item, service, amount)
   if not ok then
     self.log:warn("order for %s rejected by %s: %s",
       item, service, err and (err.message or err.code) or "?")
-    return
+    return nil
   end
   local claim = body.claim
 
@@ -214,7 +232,7 @@ function Sender:_place_order(item, service, amount)
       claim_id = claim.id, reason = "nothing_to_ship",
     })
     self.active[claim.id] = nil
-    return
+    return 0
   end
 
   -- The staged amount IS the commitment the service scales the claim to.
@@ -228,9 +246,9 @@ function Sender:_place_order(item, service, amount)
       util.short_id(claim.id), err2 and err2.code or "?")
   end
   self.log:info("claim %s: staged %d x %s", util.short_id(claim.id), staged, item)
-
-  -- Best-effort transport now; the janitor retries whatever stays behind.
-  self:_push_outbox()
+  -- Transport happens once per order tick (and in the janitor for
+  -- whatever stays behind), not per order.
+  return staged
 end
 
 -- Transport --------------------------------------------------------------------
@@ -477,20 +495,11 @@ end
 
 function Sender:tasks()
   local tasks = self.node:tasks()
-  tasks[#tasks + 1] = function()
-    while true do
-      local ok, err = pcall(function() self:_order_tick() end)
-      if not ok then self.log:error("order tick failed: %s", tostring(err)) end
-      sleep(self.config.poll_s or 2)
-    end
-  end
-  tasks[#tasks + 1] = function()
-    while true do
-      local ok, err = pcall(function() self:_janitor_tick() end)
-      if not ok then self.log:error("janitor failed: %s", tostring(err)) end
-      sleep(30)
-    end
-  end
+  -- Fixed-rate loops: poll_s is measured start-to-start, not after the work.
+  tasks[#tasks + 1] = util.every("order tick", self.config.poll_s or 2,
+    function() self:_order_tick() end, self.log)
+  tasks[#tasks + 1] = util.every("janitor", 30,
+    function() self:_janitor_tick() end, self.log)
   if self.dashboard then
     tasks[#tasks + 1] = self.dashboard:task()
   end

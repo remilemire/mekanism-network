@@ -39,7 +39,8 @@ return {
   claim_ttl_s = 900,   -- expire claims whose goods never show up
   stuck_after_s = 300, -- nag about deliveries that can't finish
   retention_s = 3600,  -- archive finished claims after this long
-  poll_s = 2,          -- output chest matching interval
+  poll_s = 2,          -- output chest matching interval (start-to-start);
+                       -- matched goods are delivered in the same tick
   data_dir = "/data/claims",
   -- archive_retention_s = 86400, -- delete archived claims after this long
   --                                 (the disk quota is ~1MB; never keep forever)

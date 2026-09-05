@@ -35,7 +35,7 @@ return {
     max = 72,         -- cap per claim
     max_inflight = 4, -- concurrent outstanding claims allowed per item type
   },
-  poll_s = 2,         -- input buffer scan interval
+  poll_s = 2,         -- input buffer scan interval (start-to-start)
 
   -- Optional in-world dashboard on an attached monitor (advanced = color).
   -- The sender keeps logging to its own terminal; the monitor is extra.

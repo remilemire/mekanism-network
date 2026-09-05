@@ -259,25 +259,41 @@ function Service:_match_tick()
 
   -- FIFO over open claims, oldest first (by_status sorts by created_at):
   -- this is where cross-sender fairness is enforced.
+  local matched = 0
   for _, c in ipairs(self.ledger:by_status(claims.STATUS.CREATED, claims.STATUS.IN_TRANSIT)) do
     local avail = (counts[c.item] or 0) - (reserved[c.item] or 0)
     if avail >= c.amount then
       self.ledger:transition(c, claims.STATUS.ARRIVED)
       reserved[c.item] = (reserved[c.item] or 0) + c.amount
+      matched = matched + 1
       self.log:info("claim %s: %d x %s ready for #%d",
         util.short_id(c.id), c.amount, c.item, c.sender_id)
     end
   end
+
+  -- Goods that just became ready leave now rather than waiting out the
+  -- deliver loop's next wake-up: every poll in the chain adds its whole
+  -- period to how long a sender waits.
+  if matched > 0 then self:_deliver_tick() end
 end
 
 -- Delivery ---------------------------------------------------------------------
 
+--- Push every claim that is due. Guarded so the match loop and the deliver
+--- loop can both call it without two coroutines pushing the same claim.
 function Service:_deliver_tick()
+  if self.deliver_busy then return end
+  self.deliver_busy = true
+  local ok, err = pcall(function() self:_deliver_due() end)
+  self.deliver_busy = false
+  if not ok then error(err, 0) end
+end
+
+function Service:_deliver_due()
   local now = util.now_ms()
   for _, c in ipairs(self.ledger:by_status(claims.STATUS.ARRIVED, claims.STATUS.DELIVERING)) do
     if (c.next_attempt_at or 0) <= now then
       self:_deliver(c)
-      return -- one delivery per tick keeps the logs legible
     end
   end
 end
@@ -488,18 +504,13 @@ end
 
 function Service:tasks()
   local tasks = self.node:tasks()
-  local function loop(name, fn, interval)
-    return function()
-      while true do
-        local ok, err = pcall(fn)
-        if not ok then self.log:error("%s failed: %s", name, tostring(err)) end
-        sleep(interval)
-      end
-    end
-  end
-  tasks[#tasks + 1] = loop("match tick", function() self:_match_tick() end, self.config.poll_s or 2)
-  tasks[#tasks + 1] = loop("deliver tick", function() self:_deliver_tick() end, 1)
-  tasks[#tasks + 1] = loop("janitor", function() self:_janitor_tick() end, 15)
+  -- Fixed-rate loops: poll_s is measured start-to-start, not after the work.
+  tasks[#tasks + 1] = util.every("match tick", self.config.poll_s or 2,
+    function() self:_match_tick() end, self.log)
+  tasks[#tasks + 1] = util.every("deliver tick", 1,
+    function() self:_deliver_tick() end, self.log)
+  tasks[#tasks + 1] = util.every("janitor", 15,
+    function() self:_janitor_tick() end, self.log)
   if self.dashboard then
     tasks[#tasks + 1] = self.dashboard:task()
   end

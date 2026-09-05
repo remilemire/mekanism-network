@@ -215,6 +215,15 @@ That's it — there is nothing else to configure; services are self-contained.
   ledger (this is where expired claims go after an hour). Append a service
   hostname to target just one.
 - Logs go to the terminal and `/data/logs/<name>.log` (rotating).
+- Latency: every loop runs at a fixed rate (`poll_s` is measured
+  start-to-start), the sender fans a pile out into full claims within one
+  tick, and matched goods leave the service in the same tick they match.
+  What remains is the sum of the polls in the chain -- up to the sender's
+  `poll_s` before ordering plus the service's `poll_s` before it notices
+  the output -- plus the factory's own processing time. If something still
+  feels slow, run with `log = { level = "debug" }`: loops report when a
+  run overran its interval, and requests report every attempt that got no
+  reply within its timeout (a silent retry costs 3s).
 - Recipe `output` ids must match what your pack's machines really produce
   (modpacks often unify dusts, e.g. `ftbmaterials:iron_dust`) — a wrong id
   leaves claims silently stuck `in_transit`; read the true id from the

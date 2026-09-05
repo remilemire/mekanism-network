@@ -38,6 +38,26 @@ function util.shallow_copy(t)
   return out
 end
 
+--- A fixed-rate task for parallel.waitForAll: runs fn every interval_s
+--- seconds measured start-to-start, so the work itself never stretches the
+--- period (sleeping AFTER the work would make a 2s poll with 1s of work a
+--- 3s poll). An overrun simply starts the next run right away, with a
+--- debug line saying so; errors are logged and never take the node down.
+function util.every(name, interval_s, fn, log)
+  return function()
+    while true do
+      local started = os.clock()
+      local ok, err = pcall(fn)
+      if not ok and log then log:error("%s failed: %s", name, tostring(err)) end
+      local took = os.clock() - started
+      if took > interval_s and log then
+        log:debug("%s ran %.1fs, longer than its %ss interval", name, took, tostring(interval_s))
+      end
+      sleep(math.max(0.05, interval_s - took))
+    end
+  end
+end
+
 --- Invert a service -> {items} routes table into item -> service, refusing
 --- ambiguity: every item may be routed to exactly one service.
 function util.invert_routes(routes)
