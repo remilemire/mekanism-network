@@ -10,8 +10,7 @@ without it and can retry later.
 
 Rows use the same segment convention as lib/render.line:
   { color1, "text1", color2, "text2", ... }
-A color may also be a table { fg = ..., bg = ... } to paint the background
-(that is how solid pixels are drawn -- CC's block glyph is a dither).
+A color may also be a table { fg = ..., bg = ... } to paint the background.
 ]]
 
 local class = require("lib.class")
@@ -97,66 +96,6 @@ function MonitorView:draw(rows)
     return false
   end
   return true
-end
-
--- Big titles ------------------------------------------------------------------
-
--- A 3x5 block font: five rows per glyph, "#" = pixel. Monitors have one
--- text scale for the whole screen, so this is how a title gets "bigger".
-local FONT = {
-  A = { ".#.", "#.#", "###", "#.#", "#.#" }, B = { "##.", "#.#", "##.", "#.#", "##." },
-  C = { ".##", "#..", "#..", "#..", ".##" }, D = { "##.", "#.#", "#.#", "#.#", "##." },
-  E = { "###", "#..", "##.", "#..", "###" }, F = { "###", "#..", "##.", "#..", "#.." },
-  G = { ".##", "#..", "#.#", "#.#", ".##" }, H = { "#.#", "#.#", "###", "#.#", "#.#" },
-  I = { "###", ".#.", ".#.", ".#.", "###" }, J = { "..#", "..#", "..#", "#.#", ".#." },
-  K = { "#.#", "#.#", "##.", "#.#", "#.#" }, L = { "#..", "#..", "#..", "#..", "###" },
-  M = { "#.#", "###", "###", "#.#", "#.#" }, N = { "##.", "#.#", "#.#", "#.#", "#.#" },
-  O = { ".#.", "#.#", "#.#", "#.#", ".#." }, P = { "##.", "#.#", "##.", "#..", "#.." },
-  Q = { ".#.", "#.#", "#.#", "###", ".##" }, R = { "##.", "#.#", "##.", "#.#", "#.#" },
-  S = { ".##", "#..", ".#.", "..#", "##." }, T = { "###", ".#.", ".#.", ".#.", ".#." },
-  U = { "#.#", "#.#", "#.#", "#.#", "###" }, V = { "#.#", "#.#", "#.#", "#.#", ".#." },
-  W = { "#.#", "#.#", "###", "###", "#.#" }, X = { "#.#", "#.#", ".#.", "#.#", "#.#" },
-  Y = { "#.#", "#.#", ".#.", ".#.", ".#." }, Z = { "###", "..#", ".#.", "#..", "###" },
-  ["0"] = { "###", "#.#", "#.#", "#.#", "###" }, ["1"] = { ".#.", "##.", ".#.", ".#.", "###" },
-  ["2"] = { "##.", "..#", ".#.", "#..", "###" }, ["3"] = { "###", "..#", ".##", "..#", "###" },
-  ["4"] = { "#.#", "#.#", "###", "..#", "..#" }, ["5"] = { "###", "#..", "##.", "..#", "##." },
-  ["6"] = { ".##", "#..", "###", "#.#", "###" }, ["7"] = { "###", "..#", ".#.", ".#.", ".#." },
-  ["8"] = { "###", "#.#", "###", "#.#", "###" }, ["9"] = { "###", "#.#", "###", "..#", "##." },
-  [" "] = { "...", "...", "...", "...", "..." }, ["-"] = { "...", "...", "###", "...", "..." },
-  ["."] = { "...", "...", "...", "...", ".#." }, ["!"] = { ".#.", ".#.", ".#.", "...", ".#." },
-  [":"] = { "...", ".#.", "...", ".#.", "..." }, ["/"] = { "..#", "..#", ".#.", "#..", "#.." },
-  ["'"] = { ".#.", ".#.", "...", "...", "..." }, ["&"] = { ".#.", "#.#", ".#.", "#.#", ".##" },
-}
-local BLANK = { "...", "...", "...", "...", "..." }
-
---- Render `text` as 5 rows of block letters (4 columns per character),
---- painting lit pixels as `color` backgrounds, or nil when it would not
---- fit in `width`. Lowercase is folded to uppercase; unknown characters
---- render blank.
-function MonitorView.big_rows(text, color, width)
-  text = tostring(text):upper()
-  if #text * 4 - 1 > width then return nil end
-  local rows = {}
-  for r = 1, 5 do
-    local bits = {}
-    for i = 1, #text do
-      bits[#bits + 1] = (FONT[text:sub(i, i)] or BLANK)[r]
-    end
-    local line = table.concat(bits, ".") -- one blank column between letters
-    -- Run-length encode into segments: lit runs paint the background.
-    local segs = {}
-    local pos = 1
-    while pos <= #line do
-      local ch = line:sub(pos, pos)
-      local stop = pos
-      while stop <= #line and line:sub(stop, stop) == ch do stop = stop + 1 end
-      segs[#segs + 1] = (ch == "#") and { bg = color } or colors.white
-      segs[#segs + 1] = string.rep(" ", stop - pos)
-      pos = stop
-    end
-    rows[r] = segs
-  end
-  return rows
 end
 
 return MonitorView

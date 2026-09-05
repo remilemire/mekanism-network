@@ -26,6 +26,7 @@ return {
     -- service (rednet hostname) -> items from input_buffer it processes.
     -- Each item may appear under exactly one service.
     ["crusher-1"] = { "minecraft:iron_ingot" },
+    -- ["smelter-1"] = { "minecraft:raw_iron" },
     -- later: ["enricher-1"] = { "mekanism:dust_iron" },
   },
 
@@ -40,13 +41,9 @@ return {
   -- The sender keeps logging to its own terminal; the monitor is extra.
   -- monitor = {
   --   device = "monitor_0",               -- peripheral name (side or network)
-  --   title = "Fission Reactor",          -- display name; drawn in block
-  --                                       -- letters when it fits (4 cols/char)
+  --   title = "Fission Reactor",          -- display name
   --   description = "iron dust for fuel", -- brief, optional
-  --   scale = 0.5,                        -- text scale for the WHOLE monitor
-  --                                       -- (0.5-5; bigger = fewer rows/cols)
-  --   big_title = true,                   -- block-letter title when it fits;
-  --                                       -- false = plain title (raise scale instead)
+  --   scale = 0.5,                        -- text scale (0.5-5; bigger = fewer rows/cols)
   --   refresh_s = 1,                      -- redraw interval, optional
   -- },
 

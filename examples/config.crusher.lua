@@ -26,6 +26,16 @@ return {
     -- ["minecraft:cobblestone"] = { output = "minecraft:gravel", ratio = 1 },
   },
 
+  -- Optional in-world dashboard on an attached monitor (advanced = color):
+  -- open claims with live status, queued input, output stock, delivered.
+  -- monitor = {
+  --   device = "monitor_1",
+  --   title = "Crusher",
+  --   description = "shared crushing line",
+  --   scale = 0.5,
+  --   refresh_s = 1,
+  -- },
+
   claim_ttl_s = 900,   -- expire claims whose goods never show up
   stuck_after_s = 300, -- nag about deliveries that can't finish
   retention_s = 3600,  -- archive finished claims after this long

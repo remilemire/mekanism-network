@@ -11,8 +11,9 @@ Every item moves chest-to-chest over one shared wired-modem network with
 computer only ever pushes items OUT of chests it owns, into a destination.
 Nothing on the network ever pulls from a chest it doesn't own.
 
-Only the crushing service exists today, but the `service` role is generic —
-an enrichment or infusing service is the same code with a different config.
+The `service` role is generic — the crusher and the smelter in `examples/`
+are the same code with different recipes, and an enrichment or infusing
+service is one more config file.
 
 ## Topology
 
@@ -142,7 +143,8 @@ lib/
   net.lua                    rednet RPC node (retries, dedup, replay)
   claims.lua                 claim model + state machine + persistent ledger
   render.lua                 colored terminal output for the tools
-  monitor.lua                MonitorView: optional in-world dashboards
+  monitor.lua                MonitorView: draws colored rows on a monitor peripheral
+  dashboard.lua              shared monitor loop + layout for the roles' dashboards
   clients/
     inventory.lua            generic inventory client (drawer-aware push_item)
     multi_inventory.lua      several inventories presented as one buffer
@@ -151,7 +153,7 @@ roles/
   sender.lua                 orders, stages, ships, drains
   service.lua                generic factory front-end; broker of its claims
 examples/
-  config.sender.lua  config.crusher.lua
+  config.sender.lua  config.crusher.lua  config.smelter.lua
 tools/
   devices.lua                list attached peripheral names for config.lua
   status.lua                 compact color dashboard (-v for raw payloads)
@@ -199,11 +201,13 @@ That's it — there is nothing else to configure; services are self-contained.
 
 - `tools/status.lua` — compact color-coded view of every node (claims,
   buffers, output stock). Pass `-v` for the full raw payloads.
-- Senders can drive an optional monitor (`monitor = {...}` in the sender
-  config): display name, description, orders in progress with their live
-  status, a spinner while work is in flight, and PAUSED / inbox warnings.
-  It draws on the monitor peripheral directly, so the sender's own
-  terminal keeps logging as usual; a missing monitor just warns.
+- Any sender or service can drive an optional monitor (`monitor = {...}`
+  in its config): a title and description, then for senders the orders in
+  progress with their live status plus PAUSED / inbox warnings, and for
+  services the open claims, queued input, output stock, and delivered
+  total -- with a spinner while work is in flight. It draws on the
+  monitor peripheral directly, so the computer's own terminal keeps
+  logging as usual; a missing monitor just warns.
 - `tools/claims.lua [status]` — merged ledger across all services;
   `show <id>` — one claim in full (chests, history; id prefixes work);
   `abort <id>` — fail a wedged claim (its goods recycle into stock);

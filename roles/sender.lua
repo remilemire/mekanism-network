@@ -29,7 +29,7 @@ local Node = require("lib.net")
 local JsonStore = require("lib.store")
 local InventoryClient = require("lib.clients.inventory")
 local render = require("lib.render")
-local MonitorView = require("lib.monitor")
+local Dashboard = require("lib.dashboard")
 
 local Sender = class()
 
@@ -57,7 +57,6 @@ function Sender:init(config, log)
   self.item_routes = util.invert_routes(config.routes)
   self.active = {}
   self.remote_status = {} -- claim id -> last status the service reported
-  self.spinner = 0
 end
 
 function Sender:setup()
@@ -71,7 +70,10 @@ function Sender:setup()
   -- monitor peripheral itself, so terminal logging is untouched, and a
   -- missing monitor only produces a throttled warning.
   if type(self.config.monitor) == "table" and type(self.config.monitor.device) == "string" then
-    self.monitor = MonitorView.new(self.config.monitor.device, { scale = self.config.monitor.scale })
+    self.dashboard = Dashboard.new({
+      config = self.config.monitor, log = self.log,
+      rows = function(w, h) return self:_monitor_rows(w, h) end,
+    })
   end
 
   for service, entry in pairs(self.chest_store:all(self.log)) do
@@ -406,21 +408,10 @@ end
 
 -- Monitor ----------------------------------------------------------------------
 
-local SPINNER = { "|", "/", "-", "\\" }
-
-function Sender:_monitor_warn(fmt, ...)
-  if util.now_ms() - (self.monitor_warn_at or 0) > 60000 then
-    self.monitor_warn_at = util.now_ms()
-    self.monitor_warned = true
-    self.log:warn(fmt, ...)
-  end
-end
-
---- Build the frame for a w x h monitor: header, orders, footer.
+--- Rows for the optional dashboard: orders in progress with the status
+--- their service last reported, plus buffer summaries.
 function Sender:_monitor_rows(w, h)
-  local mcfg = self.config.monitor
   local now = util.now_ms()
-
   local ids = {}
   for id in pairs(self.active) do ids[#ids + 1] = id end
   local entries = {}
@@ -429,37 +420,32 @@ function Sender:_monitor_rows(w, h)
     return (entries[a].created_at or 0) < (entries[b].created_at or 0)
   end)
 
-  -- Header: the title in block letters when enabled and it fits (with
-  -- rows to spare), plain text otherwise. A blank row keeps the
-  -- description from crowding the glyphs.
-  local title = tostring(mcfg.title or self.config.name)
-  local rows = nil
-  if mcfg.big_title ~= false and h >= 10 then
-    rows = MonitorView.big_rows(title, colors.yellow, w)
-  end
-  if rows then
-    rows[#rows + 1] = { colors.white, "" }
-  else
-    rows = { { colors.yellow, title } }
-  end
-  if mcfg.description and #tostring(mcfg.description) > 0 then
-    rows[#rows + 1] = { colors.lightGray, tostring(mcfg.description) }
-  end
-  rows[#rows + 1] = { colors.gray, string.rep("-", w) }
-
-  -- Orders line with the spinner (or PAUSED) at the right edge.
   local marker, marker_color = "", colors.white
   if self.drain_stuck_since then
     marker, marker_color = "PAUSED", colors.red
   elseif #ids > 0 then
-    self.spinner = (self.spinner % #SPINNER) + 1
-    marker, marker_color = SPINNER[self.spinner], colors.lime
+    marker, marker_color = self.dashboard:spin(), colors.lime
   end
-  local label = ("Orders (%d)"):format(#ids)
-  rows[#rows + 1] = { colors.white, label, colors.white,
-    string.rep(" ", math.max(1, w - #label - #marker)), marker_color, marker }
+  local header = self.dashboard:header(w, self.config.monitor.title or self.config.name,
+    marker, marker_color)
+  header[#header + 1] = { colors.white, ("Orders (%d)"):format(#ids) }
 
-  -- Footer first, so the order list can budget the space between.
+  local body = {}
+  for _, id in ipairs(ids) do
+    local e = entries[id]
+    local status = self.remote_status[id] or e.status or "?"
+    local color = render.status_color(status)
+    if status == "shipped" then color = colors.yellow
+    elseif status == "staging" then color = colors.lightGray end
+    body[#body + 1] = {
+      colors.white, util.short_id(id) .. " ",
+      colors.lightGray, ("%-12s "):format(render.short_item(e.input_item or self.active[id]):sub(1, 12)),
+      colors.white, ("%3d "):format(e.staged or e.requested or 0),
+      color, ("%-10s "):format(status),
+      colors.gray, util.fmt_age(now - (e.created_at or e.updated_at or now)),
+    }
+  end
+
   local footer = {
     { colors.gray, "in: ", colors.white, render.fmt_counts(self.input_buffer:counts(), 2) },
   }
@@ -470,59 +456,8 @@ function Sender:_monitor_rows(w, h)
       self.drain_stuck_since and colors.red or colors.yellow,
       inbox_n .. " items" .. (self.drain_stuck_since and " (stuck)" or "") }
   end
-  while #footer > 0 and h - #rows - #footer < 1 do
-    table.remove(footer)
-  end
 
-  -- Orders, capped to the remaining rows with a "+N more" tail.
-  local budget = h - #rows - #footer
-  if #ids == 0 then
-    if budget >= 1 then rows[#rows + 1] = { colors.gray, "  no orders in progress" } end
-  elseif budget >= 1 then
-    local shown = #ids <= budget and #ids or math.max(0, budget - 1)
-    for i = 1, shown do
-      local id = ids[i]
-      local e = entries[id]
-      local status = self.remote_status[id] or e.status or "?"
-      local color = render.status_color(status)
-      if status == "shipped" then color = colors.yellow
-      elseif status == "staging" then color = colors.lightGray end
-      rows[#rows + 1] = {
-        colors.white, util.short_id(id) .. " ",
-        colors.lightGray, ("%-12s "):format(render.short_item(e.input_item or self.active[id]):sub(1, 12)),
-        colors.white, ("%3d "):format(e.staged or e.requested or 0),
-        color, ("%-10s "):format(status),
-        colors.gray, util.fmt_age(now - (e.created_at or e.updated_at or now)),
-      }
-    end
-    if shown < #ids then
-      rows[#rows + 1] = { colors.gray, ("  +%d more"):format(#ids - shown) }
-    end
-  end
-
-  for _, row in ipairs(footer) do rows[#rows + 1] = row end
-  return rows
-end
-
-function Sender:_monitor_task()
-  local mcfg = self.config.monitor
-  while true do
-    local available = false
-    local ok, err = pcall(function()
-      local w, h = self.monitor:size()
-      if not w then return end
-      available = self.monitor:draw(self:_monitor_rows(w, h))
-    end)
-    if not ok then
-      self:_monitor_warn("monitor draw failed: %s", tostring(err))
-    elseif not available then
-      self:_monitor_warn("monitor '%s' not found; will keep trying", tostring(mcfg.device))
-    elseif self.monitor_warned then
-      self.monitor_warned = nil
-      self.log:info("monitor '%s' is back", tostring(mcfg.device))
-    end
-    sleep(available and (mcfg.refresh_s or 1) or 30)
-  end
+  return Dashboard.layout(h, header, body, footer, "  no orders in progress")
 end
 
 -- Status & tasks ---------------------------------------------------------------
@@ -556,8 +491,8 @@ function Sender:tasks()
       sleep(30)
     end
   end
-  if self.monitor then
-    tasks[#tasks + 1] = function() self:_monitor_task() end
+  if self.dashboard then
+    tasks[#tasks + 1] = self.dashboard:task()
   end
   return tasks
 end

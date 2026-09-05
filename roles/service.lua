@@ -23,6 +23,8 @@ local Node = require("lib.net")
 local claims = require("lib.claims")
 local InventoryClient = require("lib.clients.inventory")
 local MachineClient = require("lib.clients.machine")
+local render = require("lib.render")
+local Dashboard = require("lib.dashboard")
 
 local Service = class()
 
@@ -50,6 +52,15 @@ function Service:setup()
   self.output_chest = InventoryClient.new(d.output_chest)
   if d.machine then
     self.machine = MachineClient.new(d.machine)
+  end
+
+  -- Optional in-world dashboard: draws on the monitor peripheral itself, so
+  -- terminal logging is untouched; a missing monitor only warns.
+  if type(self.config.monitor) == "table" and type(self.config.monitor.device) == "string" then
+    self.dashboard = Dashboard.new({
+      config = self.config.monitor, log = self.log,
+      rows = function(w, h) return self:_monitor_rows(w, h) end,
+    })
   end
 
   self.ledger = claims.ClaimLedger.new(self.config.data_dir or "/data/claims", self.log)
@@ -408,6 +419,46 @@ function Service:_janitor_tick()
   end
 end
 
+-- Monitor ----------------------------------------------------------------------
+
+local function safe_counts(client)
+  local ok, counts = pcall(function() return client:counts() end)
+  return ok and counts or {}
+end
+
+--- Rows for the optional dashboard: open claims oldest-first with their
+--- live status, then queued input, output stock, and the delivered total.
+function Service:_monitor_rows(w, h)
+  local now = util.now_ms()
+  local open = self.ledger:by_status(claims.STATUS.CREATED, claims.STATUS.IN_TRANSIT,
+    claims.STATUS.ARRIVED, claims.STATUS.DELIVERING)
+
+  local marker, marker_color = "", colors.white
+  if #open > 0 then marker, marker_color = self.dashboard:spin(), colors.lime end
+  local header = self.dashboard:header(w, self.config.monitor.title or self.config.name,
+    marker, marker_color)
+  header[#header + 1] = { colors.white, ("Claims (%d)"):format(#open) }
+
+  local body = {}
+  for _, c in ipairs(open) do
+    body[#body + 1] = {
+      colors.white, util.short_id(c.id) .. " ",
+      colors.lightGray, ("#%-3s"):format(tostring(c.sender_id)),
+      colors.lightGray, ("%-12s "):format(render.short_item(c.item):sub(1, 12)),
+      colors.white, ("%3d "):format((c.amount or 0) - (c.dispatched or 0)),
+      render.status_color(c.status), ("%-10s "):format(c.status),
+      colors.gray, util.fmt_age(now - (c.created_at or now)),
+    }
+  end
+
+  local footer = {
+    { colors.gray, "in:  ", colors.white, render.fmt_counts(safe_counts(self.input_chest), 2) },
+    { colors.gray, "out: ", colors.white, render.fmt_counts(safe_counts(self.output_chest), 2) },
+    { colors.gray, "delivered: ", colors.white, tostring(self.delivered) },
+  }
+  return Dashboard.layout(h, header, body, footer, "  no claims in progress")
+end
+
 -- Status & tasks ---------------------------------------------------------------
 
 function Service:_status()
@@ -449,6 +500,9 @@ function Service:tasks()
   tasks[#tasks + 1] = loop("match tick", function() self:_match_tick() end, self.config.poll_s or 2)
   tasks[#tasks + 1] = loop("deliver tick", function() self:_deliver_tick() end, 1)
   tasks[#tasks + 1] = loop("janitor", function() self:_janitor_tick() end, 15)
+  if self.dashboard then
+    tasks[#tasks + 1] = self.dashboard:task()
+  end
   return tasks
 end
 
