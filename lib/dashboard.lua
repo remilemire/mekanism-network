@@ -70,9 +70,11 @@ function Dashboard.layout(h, header, body, footer, empty_text)
   if #body == 0 then
     if budget >= 1 and empty_text then rows[#rows + 1] = { colors.gray, empty_text } end
   elseif budget >= 1 then
-    local shown = #body <= budget and #body or math.max(0, budget - 1)
+    -- Overflow: keep one row for the "+N more" tail, but never let the tail
+    -- crowd out the last real row on a tiny screen.
+    local shown = #body <= budget and #body or math.max(1, budget - 1)
     for i = 1, shown do rows[#rows + 1] = body[i] end
-    if shown < #body then
+    if shown < #body and shown < budget then
       rows[#rows + 1] = { colors.gray, ("  +%d more"):format(#body - shown) }
     end
   end
